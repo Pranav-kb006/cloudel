@@ -1,0 +1,89 @@
+mode,engine,layer,bytes,fetch_s,compute_s,blocked_s,fetch_start_s,fetch_end_s,compute_start_s,compute_end_s,checksum,metric,value
+pipeline,real,model.layers.0,88088576,1.251399,0.891540,1.249742,-0.001724,1.249675,1.249751,2.141291,0.024606,,
+pipeline,real,model.layers.1,88088576,1.523770,0.379519,0.632454,1.249925,2.773695,2.773777,3.153296,0.025520,,
+pipeline,real,model.layers.2,88088576,1.526765,0.218832,1.147403,2.773889,4.300654,4.300731,4.519563,0.042252,,
+pipeline,real,model.layers.3,88088576,1.268952,0.204188,1.050273,4.300848,5.569799,5.569862,5.774051,0.042358,,
+pipeline,real,model.layers.4,88088576,1.301242,0.234807,1.097187,5.569965,6.871207,6.871283,7.106090,0.042879,,
+pipeline,real,model.layers.5,88088576,1.341942,0.214989,1.107511,6.871629,8.213571,8.213626,8.428615,0.044446,,
+pipeline,real,model.layers.6,88088576,1.259554,0.201141,1.044715,8.213722,9.473275,9.473346,9.674486,0.047243,,
+pipeline,real,model.layers.7,88088576,1.368538,0.400463,1.167542,9.473443,10.841980,10.842055,11.242518,0.074837,,
+pipeline,real,model.layers.8,88088576,1.552567,0.153850,1.152271,10.842178,12.394745,12.394809,12.548659,0.078978,,
+pipeline,real,model.layers.9,88088576,1.332323,0.194751,1.178649,12.394925,13.727248,13.727327,13.922077,0.081540,,
+pipeline,real,model.layers.10,88088576,1.264060,0.155287,1.069510,13.727498,14.991558,14.991607,15.146894,0.085228,,
+pipeline,real,model.layers.11,88088576,1.278260,0.194694,1.123101,14.991693,16.269953,16.270016,16.464710,0.088370,,
+pipeline,real,model.layers.12,88088576,1.278499,0.157942,1.083958,16.270142,17.548640,17.548701,17.706644,0.092057,,
+pipeline,real,model.layers.13,88088576,1.273332,0.203605,1.115534,17.548795,18.822127,18.822199,19.025804,0.096970,,
+pipeline,real,model.layers.14,88088576,1.312776,0.260751,1.109302,18.822299,20.135075,20.135132,20.395883,0.100389,,
+pipeline,real,model.layers.15,88088576,1.459818,0.355784,1.199228,20.135250,21.595068,21.595138,21.950922,0.106090,,
+pipeline,real,model.layers.16,88088576,1.499651,0.233905,1.144064,21.595254,23.094905,23.095006,23.328911,0.114845,,
+pipeline,real,model.layers.17,88088576,1.403706,0.365743,1.170037,23.095173,24.498879,24.498966,24.864709,0.126328,,
+pipeline,real,model.layers.18,88088576,1.567017,0.300514,1.201553,24.499095,26.066112,26.066284,26.366798,0.140512,,
+pipeline,real,model.layers.19,88088576,1.493806,0.298640,1.193584,26.066476,27.560282,27.560399,27.859039,0.201007,,
+pipeline,real,model.layers.20,88088576,1.587739,0.280010,1.289327,27.560552,29.148291,29.148388,29.428398,0.443545,,
+pipeline,real,model.layers.21,88088576,1.441583,0.141569,1.161740,29.148519,30.590102,30.590156,30.731724,0.597580,,
+
+pipeline,real,,,,,,,,,,,first_layer_ttft_s,2.141291
+pipeline,real,,,,,,,,,,,ttft_s,30.731744
+pipeline,real,,,,,,,,,,,total_s,30.731744
+pipeline,real,,,,,,,,,,,io_wait_s,24.688684
+pipeline,real,,,,,,,,,,,compute_s,6.042525
+pipeline,real,,,,,,,,,,,slice_s,
+pipeline,real,,,,,,,,,,,masking_ratio,0.000000
+pipeline,real,,,,,,,,,,,bytes_downloaded,1937948672
+pipeline,real,,,,,,,,,,,nominal_io_s,15.503589
+pipeline,real,,,,,,,,,,,peak_rss_mb,2890.105469
+pipeline,real,,,,,,,,,,,bandwidth_mbps,1000.000000
+pipeline,real,,,,,,,,,,,url,http://127.0.0.1:36895/model.safetensors
+pipeline,real,,,,,,,,,,,model,"TinyLlama-1.1B-Chat-v1.0 (22 layers, hidden 2048, head_dim 64, kv_heads 4)"
+pipeline,real,,,,,,,,,,,layers,"model.layers.0,model.layers.1,model.layers.2,model.layers.3,model.layers.4,model.layers.5,model.layers.6,model.layers.7,model.layers.8,model.layers.9,model.layers.10,model.layers.11,model.layers.12,model.layers.13,model.layers.14,model.layers.15,model.layers.16,model.layers.17,model.layers.18,model.layers.19,model.layers.20,model.layers.21"
+pipeline,real,,,,,,,,,,,runtime,torch 2.11.0+cu128; engine device=cuda; torch.cuda.is_available()=True (CPU runtime; CUDA is used only if device='cuda' and CUDA is available)
+pipeline,real,,,,,,,,,,,note,layer order: numeric 0..21 (checkpoint stores blocks lexicographically)
+pipeline,real,,,,,,,,,,,note,seq=1 single-token forward pass; per-layer compute from real BF16 weights
+pipeline,real,,,,,,,,,,,note,"masking_ratio = 1 - io_wait / nominal_io, nominal_io = bytes/(bandwidth/8)"
+pipeline,real,,,,,,,,,,,note,local RangeServer + loopback stands in for MinIO/S3 + tc/netem
+pipeline,real,,,,,,,,,,,note,"measured loopback throughput ~571.2 Mbit/s vs 1000 Mbit/s nominal (per-chunk pacing overhead); io_wait >= nominal_io, so masking_ratio clamps to 0"
+
+baseline,real,model.layers.0,88088576,,0.238369,,,,31.029600,31.267969,0.025094,,
+baseline,real,model.layers.1,88088576,,0.152727,,,,31.428156,31.580883,0.025790,,
+baseline,real,model.layers.2,88088576,,0.146804,,,,31.777541,31.924345,0.033099,,
+baseline,real,model.layers.3,88088576,,0.163312,,,,32.074879,32.238191,0.033710,,
+baseline,real,model.layers.4,88088576,,0.179220,,,,32.413164,32.592384,0.035241,,
+baseline,real,model.layers.5,88088576,,0.166774,,,,32.783871,32.950646,0.037494,,
+baseline,real,model.layers.6,88088576,,0.160617,,,,33.154492,33.315109,0.041241,,
+baseline,real,model.layers.7,88088576,,0.151799,,,,33.501062,33.652861,0.066792,,
+baseline,real,model.layers.8,88088576,,0.178767,,,,33.839224,34.017991,0.072277,,
+baseline,real,model.layers.9,88088576,,0.156702,,,,34.168420,34.325122,0.075470,,
+baseline,real,model.layers.10,88088576,,0.142834,,,,34.482117,34.624952,0.075935,,
+baseline,real,model.layers.11,88088576,,0.134190,,,,34.789959,34.924149,0.077444,,
+baseline,real,model.layers.12,88088576,,0.143091,,,,35.111653,35.254744,0.080129,,
+baseline,real,model.layers.13,88088576,,0.169529,,,,35.457039,35.626568,0.083798,,
+baseline,real,model.layers.14,88088576,,0.152160,,,,35.820546,35.972705,0.089981,,
+baseline,real,model.layers.15,88088576,,0.161855,,,,36.162511,36.324366,0.104892,,
+baseline,real,model.layers.16,88088576,,0.154413,,,,36.500056,36.654469,0.120768,,
+baseline,real,model.layers.17,88088576,,0.159811,,,,36.814111,36.973922,0.142858,,
+baseline,real,model.layers.18,88088576,,0.183906,,,,37.134725,37.318631,0.183856,,
+baseline,real,model.layers.19,88088576,,0.166904,,,,37.478329,37.645234,0.256424,,
+baseline,real,model.layers.20,88088576,,0.140900,,,,37.800186,37.941086,0.337430,,
+baseline,real,model.layers.21,88088576,,0.166096,,,,38.098068,38.264163,0.570881,,
+
+baseline,real,,,,,,,,,,,first_layer_ttft_s,31.050884
+baseline,real,,,,,,,,,,,ttft_s,38.264182
+baseline,real,,,,,,,,,,,total_s,38.264182
+baseline,real,,,,,,,,,,,io_wait_s,30.812514
+baseline,real,,,,,,,,,,,compute_s,3.570781
+baseline,real,,,,,,,,,,,slice_s,3.810569
+baseline,real,,,,,,,,,,,masking_ratio,0.000000
+baseline,real,,,,,,,,,,,bytes_downloaded,2200119864
+baseline,real,,,,,,,,,,,nominal_io_s,17.600959
+baseline,real,,,,,,,,,,,peak_rss_mb,
+baseline,real,,,,,,,,,,,bandwidth_mbps,1000.000000
+baseline,real,,,,,,,,,,,url,http://127.0.0.1:36895/model.safetensors
+baseline,real,,,,,,,,,,,model,"TinyLlama-1.1B-Chat-v1.0 (22 layers, hidden 2048, head_dim 64, kv_heads 4)"
+baseline,real,,,,,,,,,,,layers,"model.layers.0,model.layers.1,model.layers.2,model.layers.3,model.layers.4,model.layers.5,model.layers.6,model.layers.7,model.layers.8,model.layers.9,model.layers.10,model.layers.11,model.layers.12,model.layers.13,model.layers.14,model.layers.15,model.layers.16,model.layers.17,model.layers.18,model.layers.19,model.layers.20,model.layers.21"
+baseline,real,,,,,,,,,,,runtime,torch 2.11.0+cu128; engine device=cuda; torch.cuda.is_available()=True (CPU runtime; CUDA is used only if device='cuda' and CUDA is available)
+baseline,real,,,,,,,,,,,note,layer order: numeric 0..21 (checkpoint stores blocks lexicographically)
+baseline,real,,,,,,,,,,,note,seq=1 single-token forward pass; per-layer compute from real BF16 weights
+baseline,real,,,,,,,,,,,note,"masking_ratio = 1 - io_wait / nominal_io, nominal_io = bytes/(bandwidth/8)"
+baseline,real,,,,,,,,,,,note,local RangeServer + loopback stands in for MinIO/S3 + tc/netem
+baseline,real,,,,,,,,,,,note,"measured loopback throughput ~571.2 Mbit/s vs 1000 Mbit/s nominal (per-chunk pacing overhead); io_wait >= nominal_io, so masking_ratio clamps to 0"
+

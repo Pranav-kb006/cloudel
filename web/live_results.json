@@ -1,0 +1,156 @@
+[
+  {
+    "layer": "model.layers.0",
+    "download_s": 1.241978983000081,
+    "compute_s": 0.18160957200052508,
+    "checksum": 0.025009585544466972,
+    "timestamp": 1794493180.0813098
+  },
+  {
+    "layer": "model.layers.1",
+    "download_s": 1.2675803299998734,
+    "compute_s": 0.15677871400021104,
+    "checksum": 0.0259651280939579,
+    "timestamp": 1794493181.3241537
+  },
+  {
+    "layer": "model.layers.2",
+    "download_s": 1.2199430810005651,
+    "compute_s": 0.11809071900006529,
+    "checksum": 0.04023420065641403,
+    "timestamp": 1794493182.5055153
+  },
+  {
+    "layer": "model.layers.3",
+    "download_s": 1.2994568240001172,
+    "compute_s": 0.12450633800017386,
+    "checksum": 0.04030206426978111,
+    "timestamp": 1794493183.8115172
+  },
+  {
+    "layer": "model.layers.4",
+    "download_s": 1.2309793309996166,
+    "compute_s": 0.0964675579998584,
+    "checksum": 0.04128958284854889,
+    "timestamp": 1794493185.014619
+  },
+  {
+    "layer": "model.layers.5",
+    "download_s": 1.1730309020003915,
+    "compute_s": 0.1300663390002228,
+    "checksum": 0.04262196645140648,
+    "timestamp": 1794493186.2213802
+  },
+  {
+    "layer": "model.layers.6",
+    "download_s": 1.279931549000139,
+    "compute_s": 0.10885281799983204,
+    "checksum": 0.045281607657670975,
+    "timestamp": 1794493187.480243
+  },
+  {
+    "layer": "model.layers.7",
+    "download_s": 1.1845257400000264,
+    "compute_s": 0.11791420300050959,
+    "checksum": 0.0711006447672844,
+    "timestamp": 1794493188.67393
+  },
+  {
+    "layer": "model.layers.8",
+    "download_s": 1.2322433730005287,
+    "compute_s": 0.142073067999263,
+    "checksum": 0.07574611902236938,
+    "timestamp": 1794493189.930439
+  },
+  {
+    "layer": "model.layers.9",
+    "download_s": 1.2317328790004467,
+    "compute_s": 0.12084608900022431,
+    "checksum": 0.07802407443523407,
+    "timestamp": 1794493191.1410768
+  },
+  {
+    "layer": "model.layers.10",
+    "download_s": 1.216696898999544,
+    "compute_s": 0.14843339299932268,
+    "checksum": 0.08119982481002808,
+    "timestamp": 1794493192.3854575
+  },
+  {
+    "layer": "model.layers.11",
+    "download_s": 1.247699470999578,
+    "compute_s": 0.15075200999945082,
+    "checksum": 0.08384726196527481,
+    "timestamp": 1794493193.6355758
+  },
+  {
+    "layer": "model.layers.12",
+    "download_s": 1.2177140740004688,
+    "compute_s": 0.10551626600044983,
+    "checksum": 0.08713412284851074,
+    "timestamp": 1794493194.8081534
+  },
+  {
+    "layer": "model.layers.13",
+    "download_s": 1.2543483179997565,
+    "compute_s": 0.14100086399957945,
+    "checksum": 0.09186869859695435,
+    "timestamp": 1794493196.0981548
+  },
+  {
+    "layer": "model.layers.14",
+    "download_s": 1.2776409609996335,
+    "compute_s": 0.09365927399994689,
+    "checksum": 0.09498049318790436,
+    "timestamp": 1794493197.3286145
+  },
+  {
+    "layer": "model.layers.15",
+    "download_s": 1.2166003279999131,
+    "compute_s": 0.11868199299988191,
+    "checksum": 0.10212986171245575,
+    "timestamp": 1794493198.5703385
+  },
+  {
+    "layer": "model.layers.16",
+    "download_s": 1.2550229329999638,
+    "compute_s": 0.1359780780003348,
+    "checksum": 0.11386087536811829,
+    "timestamp": 1794493199.8427947
+  },
+  {
+    "layer": "model.layers.17",
+    "download_s": 1.2848987460001808,
+    "compute_s": 0.1360473720005757,
+    "checksum": 0.1302209198474884,
+    "timestamp": 1794493201.1279652
+  },
+  {
+    "layer": "model.layers.18",
+    "download_s": 1.3244603399998596,
+    "compute_s": 0.09533327899953292,
+    "checksum": 0.15676796436309814,
+    "timestamp": 1794493202.4118617
+  },
+  {
+    "layer": "model.layers.19",
+    "download_s": 1.2380837939999765,
+    "compute_s": 0.12397871899975144,
+    "checksum": 0.2214306890964508,
+    "timestamp": 1794493203.6787105
+  },
+  {
+    "layer": "model.layers.20",
+    "download_s": 1.2294535609999002,
+    "compute_s": 0.0976569219992598,
+    "checksum": 0.3691767752170563,
+    "timestamp": 1794493204.881951
+  },
+  {
+    "layer": "model.layers.21",
+    "download_s": 1.2131321440001557,
+    "compute_s": 0.09652416600056313,
+    "checksum": 0.6374934911727905,
+    "timestamp": 1794493206.0940402
+  }
+]

@@ -1,0 +1,63 @@
+RangeServer serving /home/bhandi/opencode-test/models/synthetic_8layer.safetensors
+URL: http://127.0.0.1:8765/model.safetensors
+Size: 8389896 bytes | Throttle: 8 Mbit/s shared | Chunk: 10000 B
+Layers: layer0, layer1, layer2, layer3, layer4, layer5, layer6, layer7
+Press Ctrl-C to stop.
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=0-0 status=206 bytes=1 dur=0.0005s layers=-
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=0-63 status=206 bytes=64 dur=0.0005s layers=-
+[RangeServer] "GET /model.safetensors HTTP/1.1" 200 -
+[RangeServer] GET /model.safetensors range=0-8389895 status=200 bytes=8389896 dur=8.6439s layers=layer0,layer1,layer2,layer3,layer4,layer5,layer6,layer7
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=1288-1049863 status=206 bytes=1048576 dur=3.1301s layers=layer0
+[RangeServer] GET /model.safetensors range=2098440-3147015 status=206 bytes=1048576 dur=3.1382s layers=layer2
+[RangeServer] GET /model.safetensors range=1049864-2098439 status=206 bytes=1048576 dur=3.1461s layers=layer1
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=3147016-4195591 status=206 bytes=1048576 dur=1.2162s layers=layer3
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=4195592-5244167 status=206 bytes=1048576 dur=1.3749s layers=layer4
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=5244168-6292743 status=206 bytes=1048576 dur=1.4962s layers=layer5
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=6292744-7341319 status=206 bytes=1048576 dur=1.6523s layers=layer6
+[RangeServer] GET /model.safetensors range=7341320-8389895 status=206 bytes=1048576 dur=1.3986s layers=layer7
+[RangeServer] "GET /model.safetensors HTTP/1.1" 200 -
+[RangeServer] GET /model.safetensors range=0-8389895 status=200 bytes=8389896 dur=8.6405s layers=layer0,layer1,layer2,layer3,layer4,layer5,layer6,layer7
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=1288-1049863 status=206 bytes=1048576 dur=3.1298s layers=layer0
+[RangeServer] GET /model.safetensors range=2098440-3147015 status=206 bytes=1048576 dur=3.1380s layers=layer2
+[RangeServer] GET /model.safetensors range=1049864-2098439 status=206 bytes=1048576 dur=3.1463s layers=layer1
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=3147016-4195591 status=206 bytes=1048576 dur=1.0815s layers=layer3
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=4195592-5244167 status=206 bytes=1048576 dur=1.2737s layers=layer4
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=5244168-6292743 status=206 bytes=1048576 dur=1.5824s layers=layer5
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=6292744-7341319 status=206 bytes=1048576 dur=1.6600s layers=layer6
+[RangeServer] GET /model.safetensors range=7341320-8389895 status=206 bytes=1048576 dur=1.3372s layers=layer7
+[RangeServer] "GET /model.safetensors HTTP/1.1" 200 -
+[RangeServer] GET /model.safetensors range=0-8389895 status=200 bytes=8389896 dur=8.6475s layers=layer0,layer1,layer2,layer3,layer4,layer5,layer6,layer7
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=1288-1049863 status=206 bytes=1048576 dur=3.1309s layers=layer0
+[RangeServer] GET /model.safetensors range=1049864-2098439 status=206 bytes=1048576 dur=3.1390s layers=layer1
+[RangeServer] GET /model.safetensors range=2098440-3147015 status=206 bytes=1048576 dur=3.1467s layers=layer2
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=3147016-4195591 status=206 bytes=1048576 dur=1.2537s layers=layer3
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=4195592-5244167 status=206 bytes=1048576 dur=1.6005s layers=layer4
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=5244168-6292743 status=206 bytes=1048576 dur=1.8111s layers=layer5
+[RangeServer] "GET /model.safetensors HTTP/1.1" 206 -
+[RangeServer] GET /model.safetensors range=6292744-7341319 status=206 bytes=1048576 dur=1.8103s layers=layer6
+[RangeServer] GET /model.safetensors range=7341320-8389895 status=206 bytes=1048576 dur=1.4352s layers=layer7

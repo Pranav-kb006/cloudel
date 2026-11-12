@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Real-model streaming demo</title>
+<style>
+  :root { --bg:#101319; --fg:#e6edf3; --muted:#8fa3b8; --accent:#4f9cf6; --green:#4ade80; --red:#f87171; --border:#26303d; --card:#0f1622; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:sans-serif; padding:24px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:18px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:14px; }
+  button { background:var(--accent); color:#fff; border:none; padding:10px 16px; border-radius:7px; cursor:pointer; font-size:14px; }
+  button:hover { background:#6bb5ff; }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .num { font-variant-numeric:tabular-nums; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  .pill { font-size:12px; padding:3px 9px; border-radius:99px; background:#1c2634; }
+  .pill.green { background:#153020; color:var(--green); }
+  .pill.red { background:#2a1818; color:var(--red); }
+  canvas { width:100%; height:220px; background:var(--card); border:1px solid var(--border); border-radius:7px; display:block; }
+  .foot { color:var(--muted); font-size:12px; margin-top:6px; }
+  .grow { flex:1; }
+  .scroll { max-height:320px; overflow:auto; }
+  label { color:var(--muted); font-size:13px; }
+  input[type=number] { background:#0b1220; color:var(--fg); border:1px solid var(--border); padding:6px 8px; border-radius:6px; width:90px; }
+  .summary { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .summary div { background:#0b1220; border:1px solid var(--border); border-radius:8px; padding:10px; }
+  .summary .k { color:var(--muted); font-size:11px; }
+  .summary .v { font-size:16px; font-variant-numeric:tabular-nums; margin-top:4px; }
+</style>
+</head>
+<body>
+  <h1>Real-model streaming demo</h1>
+  <div class="sub">TinyLlama-1.1B-Chat-v1.0 &middot; real BF16 weights, 22 Transformer layers &middot; throttled link + real GEMM</div>
+
+  <div class="card">
+    <div class="row">
+      <button id="runBtn">Run demo</button>
+      <label>bandwidth (Mbps) <input type="number" id="bw" value="1000" min="1" /></label>
+      <span class="pill" id="status">READY</span>
+      <span class="pill" id="progress">0/22 layers</span>
+    </div>
+    <div class="foot">runtime: torch 2.15.0+cpu / CUDA: available</div>
+  </div>
+
+  <div class="card">
+    <div class="scroll">
+      <table id="tbl">
+        <thead><tr><th>layer</th><th>dl_s</th><th>compute_s</th><th>checksum</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <canvas id="chart" width="800" height="220"></canvas>
+    <div class="foot">checksum rising as layers compute</div>
+  </div>
+
+  <div class="card">
+    <div class="summary">
+      <div><div class="k">first_layer_s</div><div class="v" id="s_first">-</div></div>
+      <div><div class="k">total_s</div><div class="v" id="s_total">-</div></div>
+      <div><div class="k">compute_s</div><div class="v" id="s_compute">-</div></div>
+      <div><div class="k">masking_ratio</div><div class="v" id="s_mask">-</div></div>
+    </div>
+    <div class="foot" id="finalMsg">waiting for engine result…</div>
+  </div>
+
+  <div class="foot">Model: TinyLlama-1.1B-Chat-v1.0 &middot; layers: <span id="n_layers">0</span> &middot; runtime: torch 2.15.0+cpu / CUDA: available</div>
+
+<script>
+(function () {
+  "use strict";
+  const $ = function (id) { return document.getElementById(id); };
+
+  const runBtn = $("runBtn");
+  const statusEl = $("status");
+  const progressEl = $("progress");
+  const tbodyEl = $("tbody");
+  const chart = $("chart");
+  const ctx = chart.getContext("2d");
+  const nLayersEl = $("n_layers");
+  const finalMsgEl = $("finalMsg");
+
+  const sFirst = $("s_first");
+  const sTotal = $("s_total");
+  const sCompute = $("s_compute");
+  const sMask = $("s_mask");
+
+  let rows = [];
+  let final = null;
+  let status = "READY";
+
+  function fmt(x, d) {
+    if (x === null || x === undefined || isNaN(x)) return "-";
+    return Number(x).toFixed(d === undefined ? 3 : d);
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch("/results.json");
+      if (!res.ok) return;
+      const d = await res.json();
+      if (d && Array.isArray(d.rows)) rows = d.rows;
+      final = (d && d.final) ? d.final : null;
+      status = (d && d.status) ? d.status : status;
+      statusEl.textContent = status;
+      progressEl.textContent = rows.length + "/" + (d && d.n_layers ? d.n_layers : 22) + " layers";
+      nLayersEl.textContent = rows.length;
+      render();
+    } catch (e) {
+      // ignore transient fetch errors
+    }
+  }
+
+  function renderTable() {
+    let html = "";
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      html += "<tr><td>" + (r.layer != null ? r.layer : "") + "</td>" +
+        "<td class=\"num\">" + fmt(r.download_s, 4) + "</td>" +
+        "<td class=\"num\">" + fmt(r.compute_s, 4) + "</td>" +
+        "<td class=\"num\">" + fmt(r.checksum, 5) + "</td></tr>";
+    }
+    tbodyEl.innerHTML = html;
+    const scroll = tbodyEl.parentElement.parentElement;
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  }
+
+  function renderChart() {
+    const w = chart.width;
+    const h = chart.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#0b1220";
+    ctx.fillRect(0, 0, w, h);
+    if (rows.length === 0) {
+      ctx.fillStyle = "#8fa3b8";
+      ctx.font = "13px sans-serif";
+      ctx.fillText("waiting for layers…", 14, 20);
+      return;
+    }
+    const n = rows.length;
+    const padL = 40, padR = 10, padT = 20, padB = 30;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+    // axes
+    ctx.strokeStyle = "#26303d";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, padT);
+    ctx.lineTo(padL, h - padB);
+    ctx.lineTo(w - padR, h - padB);
+    ctx.stroke();
+    // checksum range
+    let mn = 0, mx = 1;
+    const vals = rows.map(function (r) { return (r.checksum != null ? r.checksum : 0); });
+    mn = Math.min.apply(null, vals);
+    mx = Math.max.apply(null, vals);
+    if (mx - mn < 1e-9) { mx = mn + 1; }
+    // line
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = padL + (i / Math.max(1, (rows.length > 1 ? rows.length - 1 : 1))) * plotW;
+      const v = rows[i].checksum != null ? rows[i].checksum : 0;
+      const y = padT + (1 - (v - mn) / (mx - mn)) * plotH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = "#4ade80";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // points
+    for (let i = 0; i < n; i++) {
+      const x = padL + (i / Math.max(1, (rows.length > 1 ? rows.length - 1 : 1))) * plotW;
+      const v = rows[i].checksum != null ? rows[i].checksum : 0;
+      const y = padT + (1 - (v - mn) / (mx - mn)) * plotH;
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = "#4ade80";
+      ctx.fill();
+    }
+    ctx.fillStyle = "#8fa3b8";
+    ctx.font = "11px monospace";
+    ctx.fillText("checksum", 6, 14);
+    ctx.fillText(rows.length + " layers", w - 70, h - 8);
+  }
+
+  function renderSummary() {
+    if (final) {
+      sFirst.textContent = fmt(final.first_layer_s, 4);
+      sTotal.textContent = fmt(final.total_s, 4);
+      sCompute.textContent = fmt(final.compute_s, 4);
+      sMask.textContent = fmt(final.masking_ratio, 4);
+      finalMsgEl.textContent = "done · " + rows.length + " layers · masking " + fmt(final.masking_ratio, 3);
+    } else {
+      sFirst.textContent = "-";
+      sTotal.textContent = "-";
+      sCompute.textContent = "-";
+      sMask.textContent = "-";
+      finalMsgEl.textContent = "engine running…";
+    }
+  }
+
+  function render() {
+    renderTable();
+    renderChart();
+    renderSummary();
+  }
+
+  async function runDemo() {
+    runBtn.disabled = true;
+    try {
+      await fetch("/run", { method: "POST" });
+    } catch (e) {
+      // ignore
+    }
+    rows = [];
+    final = null;
+    render();
+    // poll loop continues
+    setTimeout(function () { runBtn.disabled = false; }, 1000);
+  }
+
+  runBtn.addEventListener("click", runDemo);
+
+  setInterval(poll, 500);
+  poll();
+})();
+</script>
+</body>
+</html>

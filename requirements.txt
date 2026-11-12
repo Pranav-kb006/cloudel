@@ -1,0 +1,15 @@
+# Runtime dependencies for the progressive layer-streaming benchmark.
+# Install with: python3 -m pip install -r requirements.txt
+#
+# NOTE: numpy, torch and safetensors are NOT required. The streaming engine,
+# the safetensors range parser, the local RangeServer and the synthetic model
+# generator all use the Python standard library. `safetensors` is only a
+# convenience for inspecting files with third-party tooling.
+#
+# aiohttp is used by src/core's AsyncPrefetcher (HTTP range requests).
+# psutil is used by the harness for RSS sampling.
+# requests is declared for parity with the core/examples; the harness itself
+# uses stdlib http.client.
+aiohttp>=3.9
+psutil>=5.9
+requests>=2.31

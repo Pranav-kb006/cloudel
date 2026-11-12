@@ -1,0 +1,11 @@
+{
+  "first_layer_s": 1.423704490000091,
+  "total_s": 27.44327736699961,
+  "compute_s": 2.7407677539995348,
+  "io_wait_s": 24.57552643299914,
+  "masking_ratio": 0.0,
+  "peak_rss_mb": 2964.078125,
+  "bytes_downloaded": 1937948672,
+  "layers": 22,
+  "runtime": "torch 2.11.0+cu128; cuda_available=True"
+}

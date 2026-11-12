@@ -1,0 +1,290 @@
+{
+  "file": "models/synthetic_8layer.safetensors",
+  "size": 8389896,
+  "header_len": 1280,
+  "data_start": 1288,
+  "tensors": {
+    "layer0.bias": {
+      "name": "layer0.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 1046528,
+      "rel_end": 1048576,
+      "abs_start": 1047816,
+      "abs_end": 1049864,
+      "length": 2048
+    },
+    "layer0.weight": {
+      "name": "layer0.weight",
+      "dtype": "F32",
+      "shape": [
+        511,
+        512
+      ],
+      "rel_start": 0,
+      "rel_end": 1046528,
+      "abs_start": 1288,
+      "abs_end": 1047816,
+      "length": 1046528
+    },
+    "layer1.bias": {
+      "name": "layer1.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 2095104,
+      "rel_end": 2097152,
+      "abs_start": 2096392,
+      "abs_end": 2098440,
+      "length": 2048
+    },
+    "layer1.weight": {
+      "name": "layer1.weight",
+      "dtype": "F32",
+      "shape": [
+        511,
+        512
+      ],
+      "rel_start": 1048576,
+      "rel_end": 2095104,
+      "abs_start": 1049864,
+      "abs_end": 2096392,
+      "length": 1046528
+    },
+    "layer2.bias": {
+      "name": "layer2.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 3143680,
+      "rel_end": 3145728,
+      "abs_start": 3144968,
+      "abs_end": 3147016,
+      "length": 2048
+    },
+    "layer2.weight": {
+      "name": "layer2.weight",
+      "dtype": "F32",
+      "shape": [
+        511,
+        512
+      ],
+      "rel_start": 2097152,
+      "rel_end": 3143680,
+      "abs_start": 2098440,
+      "abs_end": 3144968,
+      "length": 1046528
+    },
+    "layer3.bias": {
+      "name": "layer3.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 4192256,
+      "rel_end": 4194304,
+      "abs_start": 4193544,
+      "abs_end": 4195592,
+      "length": 2048
+    },
+    "layer3.weight": {
+      "name": "layer3.weight",
+      "dtype": "F32",
+      "shape": [
+        511,
+        512
+      ],
+      "rel_start": 3145728,
+      "rel_end": 4192256,
+      "abs_start": 3147016,
+      "abs_end": 4193544,
+      "length": 1046528
+    },
+    "layer4.bias": {
+      "name": "layer4.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 5240832,
+      "rel_end": 5242880,
+      "abs_start": 5242120,
+      "abs_end": 5244168,
+      "length": 2048
+    },
+    "layer4.weight": {
+      "name": "layer4.weight",
+      "dtype": "F32",
+      "shape": [
+        511,
+        512
+      ],
+      "rel_start": 4194304,
+      "rel_end": 5240832,
+      "abs_start": 4195592,
+      "abs_end": 5242120,
+      "length": 1046528
+    },
+    "layer5.bias": {
+      "name": "layer5.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 6289408,
+      "rel_end": 6291456,
+      "abs_start": 6290696,
+      "abs_end": 6292744,
+      "length": 2048
+    },
+    "layer5.weight": {
+      "name": "layer5.weight",
+      "dtype": "F32",
+      "shape": [
+        511,
+        512
+      ],
+      "rel_start": 5242880,
+      "rel_end": 6289408,
+      "abs_start": 5244168,
+      "abs_end": 6290696,
+      "length": 1046528
+    },
+    "layer6.bias": {
+      "name": "layer6.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 7337984,
+      "rel_end": 7340032,
+      "abs_start": 7339272,
+      "abs_end": 7341320,
+      "length": 2048
+    },
+    "layer6.weight": {
+      "name": "layer6.weight",
+      "dtype": "F32",
+      "shape": [
+        511,
+        512
+      ],
+      "rel_start": 6291456,
+      "rel_end": 7337984,
+      "abs_start": 6292744,
+      "abs_end": 7339272,
+      "length": 1046528
+    },
+    "layer7.bias": {
+      "name": "layer7.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 8386560,
+      "rel_end": 8388608,
+      "abs_start": 8387848,
+      "abs_end": 8389896,
+      "length": 2048
+    },
+    "layer7.weight": {
+      "name": "layer7.weight",
+      "dtype": "F32",
+      "shape": [
+        511,
+        512
+      ],
+      "rel_start": 7340032,
+      "rel_end": 8386560,
+      "abs_start": 7341320,
+      "abs_end": 8387848,
+      "length": 1046528
+    }
+  },
+  "layers": {
+    "layer0": {
+      "start": 1288,
+      "end": 1049864,
+      "length": 1048576,
+      "tensors": [
+        "layer0.bias",
+        "layer0.weight"
+      ]
+    },
+    "layer1": {
+      "start": 1049864,
+      "end": 2098440,
+      "length": 1048576,
+      "tensors": [
+        "layer1.bias",
+        "layer1.weight"
+      ]
+    },
+    "layer2": {
+      "start": 2098440,
+      "end": 3147016,
+      "length": 1048576,
+      "tensors": [
+        "layer2.bias",
+        "layer2.weight"
+      ]
+    },
+    "layer3": {
+      "start": 3147016,
+      "end": 4195592,
+      "length": 1048576,
+      "tensors": [
+        "layer3.bias",
+        "layer3.weight"
+      ]
+    },
+    "layer4": {
+      "start": 4195592,
+      "end": 5244168,
+      "length": 1048576,
+      "tensors": [
+        "layer4.bias",
+        "layer4.weight"
+      ]
+    },
+    "layer5": {
+      "start": 5244168,
+      "end": 6292744,
+      "length": 1048576,
+      "tensors": [
+        "layer5.bias",
+        "layer5.weight"
+      ]
+    },
+    "layer6": {
+      "start": 6292744,
+      "end": 7341320,
+      "length": 1048576,
+      "tensors": [
+        "layer6.bias",
+        "layer6.weight"
+      ]
+    },
+    "layer7": {
+      "start": 7341320,
+      "end": 8389896,
+      "length": 1048576,
+      "tensors": [
+        "layer7.bias",
+        "layer7.weight"
+      ]
+    }
+  },
+  "model": "synthetic_8layer.safetensors",
+  "synthetic": {
+    "layers": 8,
+    "rows": 511,
+    "cols": 512,
+    "seed": 1234,
+    "note": "synthetic F32 tensors; not a trained model"
+  }
+}

@@ -1,0 +1,7 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Large downloaded model artifact (2.1 GB; exceeds GitHub's 100 MB file limit).
+# Regenerate/fetch locally; synthetic models and manifests are committed.
+models/tinyllama.safetensors

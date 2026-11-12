@@ -1,0 +1,27 @@
+PUSH TASK (bounded one-shot):
+You are to publish the current project to the GitHub repository
+https://github.com/Pranav-kb006/cloudel.git (HTTPS, the machine has
+gh authenticated with repo scope).
+
+Steps:
+1. Confirm this directory is a git repo. If not, run git init.
+2. Set a local git identity if not configured: check git config user.name
+   and git config user.email; if either is empty, set them to reasonable
+   values via git config user.name and git config user.email.
+3. Add the remote:
+   git remote add origin https://github.com/Pranav-kb006/cloudel.git
+4. Stage everything: git add -A
+5. Commit with a clear message, e.g.
+   "Initial project push: async layer-streaming LLM engine with
+    RealModelComputeEngine (TinyLlama-1.1B)"
+6. Push: git push -u origin main . If the default branch is master, use that
+   instead.
+7. Verify the push landed: e.g. git ls-remote origin, or gh repo view
+   Pranav-kb006/cloudel, and get the pushed commit SHA.
+8. Report: branch name, commit SHA, remote URL, whether the push succeeded,
+   and the top-level files currently in the repo.
+
+Report exact stdout of each git step and the final verification. Do not
+fabricate a push result; if a step fails, report the real error and stop.
+Complete after step 7. Do not open a GitHub issue, PR, or fork. Just push the
+local repo to the given remote and verify.

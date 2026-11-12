@@ -1,0 +1,86 @@
+{
+  "file": "models/synthetic_2layer.safetensors",
+  "size": 8388936,
+  "header_len": 320,
+  "data_start": 328,
+  "tensors": {
+    "layer0.bias": {
+      "name": "layer0.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 4192256,
+      "rel_end": 4194304,
+      "abs_start": 4192584,
+      "abs_end": 4194632,
+      "length": 2048
+    },
+    "layer0.weight": {
+      "name": "layer0.weight",
+      "dtype": "F32",
+      "shape": [
+        2047,
+        512
+      ],
+      "rel_start": 0,
+      "rel_end": 4192256,
+      "abs_start": 328,
+      "abs_end": 4192584,
+      "length": 4192256
+    },
+    "layer1.bias": {
+      "name": "layer1.bias",
+      "dtype": "F32",
+      "shape": [
+        512
+      ],
+      "rel_start": 8386560,
+      "rel_end": 8388608,
+      "abs_start": 8386888,
+      "abs_end": 8388936,
+      "length": 2048
+    },
+    "layer1.weight": {
+      "name": "layer1.weight",
+      "dtype": "F32",
+      "shape": [
+        2047,
+        512
+      ],
+      "rel_start": 4194304,
+      "rel_end": 8386560,
+      "abs_start": 4194632,
+      "abs_end": 8386888,
+      "length": 4192256
+    }
+  },
+  "layers": {
+    "layer0": {
+      "start": 328,
+      "end": 4194632,
+      "length": 4194304,
+      "tensors": [
+        "layer0.bias",
+        "layer0.weight"
+      ]
+    },
+    "layer1": {
+      "start": 4194632,
+      "end": 8388936,
+      "length": 4194304,
+      "tensors": [
+        "layer1.bias",
+        "layer1.weight"
+      ]
+    }
+  },
+  "model": "synthetic_2layer.safetensors",
+  "synthetic": {
+    "layers": 2,
+    "rows": 2047,
+    "cols": 512,
+    "seed": 1234,
+    "note": "synthetic F32 tensors; not a trained model"
+  }
+}

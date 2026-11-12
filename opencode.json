@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "defaultAgent": "lead",
+  "agents": {
+    "lead": {
+      "model": "opencode/deepseek-v4.1-flash-free",
+      "description": "Project coordinator. Breaks work into parallel subagents, reviews output, owns the final deliverable."
+    },
+    "architect": {
+      "model": "opencode/deepseek-v4.1-flash-free",
+      "description": "Owns system design, architecture doc, and the mathematical model (baseline + pipelined TTFT)."
+    },
+    "engineer-core": {
+      "model": "opencode/deepseek-v4.1-flash-free",
+      "description": "Owns safetensors parser, async streaming engine, prefetch controller, memory-aware buffer."
+    },
+    "engineer-bench": {
+      "model": "opencode/deepseek-v4.1-flash-free",
+      "description": "Owns MinIO object store, tc bandwidth throttling, TTFT/RSS/I-O-overshadowing benchmark harness."
+    },
+    "writer": {
+      "model": "opencode/deepseek-v4.1-flash-free",
+      "description": "Owns project report, implementation plan, literature review synthesis, and viva Q&A."
+    }
+  }
+}
