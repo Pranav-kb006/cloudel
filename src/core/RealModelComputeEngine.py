@@ -107,24 +107,39 @@ class RealModelComputeEngine:
         num_heads: int = 32,
         max_positions: int = 4096,
     ) -> None:
+        self.safetensors_path = safetensors_path
         self.manifest = parse_safetensors(safetensors_path)
-        self.layers_info = self.manifest["layers"]
+        self.all_layers_info = self.manifest["layers"]
         self.tensor_meta = self.manifest["tensors"]
-        # keep only model.layers.N block keys; drop top-level keys (lm_head,
-        # model.embed_tokens) that parse_safetensors folds into layers
-        self.layers_info = {k: v for k, v in self.layers_info.items() if k.startswith("model.layers.")}
+        # keep only model.layers.N block keys for the streaming transformer path;
+        # top-level keys (lm_head, model.embed_tokens/norm) are handled separately
+        self.layers_info = {k: v for k, v in self.all_layers_info.items() if k.startswith("model.layers.")}
         self.layer_keys = sorted(self.layers_info.keys(), key=lambda k: self.layers_info[k]["start"])
+        self.final_layer_key = max(self.layer_keys, key=self._layer_index) if self.layer_keys else None
         self.layer_count = len(self.layer_keys)
         self._infer_hidden_size()
         self._build_layer_info()
+        self._build_all_layer_info()
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_q_heads = 32  # TinyLlama q heads
         self.num_kv_heads = 4  # k/v grouped heads
         self.head_dim = self.hidden_size // self.num_q_heads
         self.hidden = None
+        self.embed_weight = None
+        self.norm_weight = None
+        self.lm_head_weight = None
+        self.next_token = None
+        self.infer_trace: list[dict[str, object]] = []
+        self.infer_total_s: float | None = None
+        self._infer_t0: float | None = None
         self._init_hidden()
 
     # -- backend ------------------------------------------------------------
+    @staticmethod
+    def _layer_index(name: str) -> int:
+        tail = name.rsplit(".", 1)[-1]
+        return int(tail) if tail.isdigit() else 10**9
+
     @property
     def hidden_size(self) -> int:
         return self._hidden_size
@@ -151,6 +166,16 @@ class RealModelComputeEngine:
             info[lkey] = row
         self.layer_info = info
 
+    def _build_all_layer_info(self) -> None:
+        info = {}
+        for lkey, ldesc in self.all_layers_info.items():
+            row = []
+            for tname in ldesc["tensors"]:
+                t = self.tensor_meta[tname]
+                row.append((tname, int(t["abs_start"] - ldesc["start"]), t["dtype"], t["shape"], int(t["length"])))
+            info[lkey] = row
+        self.all_layer_info = info
+
     def _to_torch_tensor(self, arr: bytes, dtype: str, shape: list[int]) -> torch.Tensor:
         if dtype in ("F16", "float16"):
             return torch.frombuffer(memoryview(arr), dtype=torch.uint16).view(torch.int16).to(torch.float16).reshape(shape).to(self.device)
@@ -169,6 +194,13 @@ class RealModelComputeEngine:
 
     def _init_hidden(self) -> None:
         self.hidden = torch.empty(1, 1, self.hidden_size, device=self.device).uniform_(-0.05, 0.05)
+
+    def embed_token(self, token_id: int) -> torch.Tensor:
+        if self.embed_weight is None:
+            raise RuntimeError("embed_tokens.weight not loaded; run embed layer first")
+        idx = torch.tensor([int(token_id)], device=self.embed_weight.device, dtype=torch.long)
+        self.hidden = self.embed_weight.index_select(0, idx).unsqueeze(1)  # [1,1,hidden]
+        return self.hidden
 
     # -- transformer block ---------------------------------------------------
     def _transformer_block(self, x: torch.Tensor, params: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -206,22 +238,136 @@ class RealModelComputeEngine:
     def _dtype_bytes(dtype: str) -> int:
         return {"f16": 2, "float16": 2, "f32": 4, "float32": 4, "bf16": 2, "brainfloat16": 2}[dtype.strip().lower()]
 
+    def _load_layer_tensors(self, name: str, payload: bytes) -> dict[str, torch.Tensor]:
+        params = {}
+        desc = self.all_layers_info.get(name) or self.layers_info.get(name)
+        if desc is None:
+            raise KeyError(f"unknown layer {name}")
+        layer_start = desc["start"]
+        for tname in desc["tensors"]:
+            tinfo = self.tensor_meta[tname]
+            off = tinfo["abs_start"] - layer_start
+            nbytes = tinfo["length"]
+            params[tname] = self._to_torch_tensor(payload[off:off + nbytes], tinfo["dtype"], tinfo["shape"])
+        return params
+
     def run_layer(self, name: str, payload: bytes) -> ComputeResult:
         t0 = time.perf_counter()
-        params = {}
-        layer_start = self.layers_info[name]["start"]  # data-section byte offset of this layer block
-        for tname in self.layers_info[name]["tensors"]:
-            tinfo = self.tensor_meta[tname]
-            off = tinfo["abs_start"] - layer_start  # offset within this layer's payload
-            nbytes = tinfo["length"]  # safetensors 'length' is byte size
-            params[tname] = self._to_torch_tensor(payload[off:off + nbytes], tinfo["dtype"], tinfo["shape"])
-        self.hidden = self._transformer_block(self.hidden, params)
+        params = self._load_layer_tensors(name, payload)
+
+        if name == "model":
+            # contains model.embed_tokens.weight and model.norm.weight
+            if "model.embed_tokens.weight" in params:
+                self.embed_weight = params["model.embed_tokens.weight"]
+            if "model.norm.weight" in params:
+                self.norm_weight = params["model.norm.weight"]
+            # if hidden not yet set from token, keep/init
+            if self.hidden is None:
+                self._init_hidden()
+        elif name == "lm_head":
+            if "lm_head.weight" in params:
+                self.lm_head_weight = params["lm_head.weight"]
+            elif params:
+                self.lm_head_weight = next(iter(params.values()))
+            # If the streaming order put lm_head after the final block, finish
+            # the head here as well so the answer is available either way.
+            if self.hidden is not None and self.norm_weight is not None:
+                self._compute_next_token()
+        elif name.startswith("model.layers."):
+            self.hidden = self._transformer_block(self.hidden, params)
+            # The final *numeric* layer completes the forward pass.  File order
+            # is not numeric order, so use final_layer_key, not layer_keys[-1].
+            if name == self.final_layer_key and self.norm_weight is not None and self.lm_head_weight is not None:
+                self._compute_next_token()
+        else:
+            # generic: try transformer if looks like block, else ignore
+            if any(k.endswith("self_attn.q_proj.weight") for k in params):
+                self.hidden = self._transformer_block(self.hidden, params)
+
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         seconds = time.perf_counter() - t0
-        checksum = float(self.hidden.detach().abs().mean().item())
+        checksum_src = self.hidden if self.hidden is not None else (self.lm_head_weight if self.lm_head_weight is not None else self.embed_weight)
+        checksum = float(checksum_src.detach().abs().mean().item()) if checksum_src is not None else 0.0
+        elements = int(checksum_src.numel()) if checksum_src is not None else 0
         return ComputeResult(
-            layer=name, checksum=checksum, dtype="F32", tensor_elements=self.hidden.numel(),
-            processed_elements=self.hidden.numel(), operations=0, repeats=1,
+            layer=name, checksum=checksum, dtype="F32", tensor_elements=elements,
+            processed_elements=elements, operations=0, repeats=1,
             seconds=seconds, fallback=False,
         )
+
+    def _compute_next_token(self) -> int:
+        if self.hidden is None or self.norm_weight is None or self.lm_head_weight is None:
+            raise RuntimeError("missing hidden/norm/lm_head for token computation")
+        x = _rmsnorm(self.hidden, self.norm_weight)
+        logits = F.linear(x, self.lm_head_weight)  # [1,1,vocab]
+        logits = logits[:, -1, :].float()  # [1,vocab]
+        probs = torch.softmax(logits, dim=-1)
+        self.next_token = int(torch.argmax(probs, dim=-1).item())
+        self.last_logits = logits
+        return self.next_token
+
+    def infer_token(self, token_id: int) -> int:
+        """Run full prompt->next-token path: embed -> transformer layers -> norm/lm_head.
+
+        ``infer_trace`` is reset and filled with one row per top-level group
+        (``model``) and one per Transformer block, including cumulative TTFT.
+        The answer is computed inside ``run_layer`` as soon as the final
+        numeric layer completes (lm_head is preloaded so the head is available).
+        """
+        self.next_token = None
+        self.last_logits = None
+        self.infer_trace = []
+        self._infer_t0 = time.perf_counter()
+        self._init_hidden()
+
+        def _read_group(f, name: str) -> bytes:
+            desc = self.all_layers_info[name]
+            f.seek(desc["start"])
+            return f.read(desc["end"] - desc["start"])
+
+        # 1) load embed/norm and preload lm_head weights.  lm_head is applied
+        # only after the 22 blocks, but preloading lets the final block finish
+        # the whole answer path inside run_layer.
+        with open(self.safetensors_path, "rb") as f:
+            for name in ("model", "lm_head"):
+                if name not in self.all_layers_info:
+                    continue
+                result = self.run_layer(name, _read_group(f, name))
+                if name == "model":
+                    self.infer_trace.append(
+                        {
+                            "layer": name,
+                            "checksum": float(result.checksum),
+                            "seconds": float(result.seconds),
+                            "ttft_s": time.perf_counter() - self._infer_t0,
+                        }
+                    )
+
+        # 2) embed input token
+        self.embed_token(token_id)
+        # discard any premature head result from preloading lm_head
+        self.next_token = None
+        self.last_logits = None
+
+        # 3) transformer layers in numeric forward order
+        ordered_layers = sorted(self.layer_keys, key=self._layer_index)
+        with open(self.safetensors_path, "rb") as f:
+            for name in ordered_layers:
+                result = self.run_layer(name, _read_group(f, name))
+                self.infer_trace.append(
+                    {
+                        "layer": name,
+                        "checksum": float(result.checksum),
+                        "seconds": float(result.seconds),
+                        "ttft_s": time.perf_counter() - self._infer_t0,
+                    }
+                )
+
+        # 4) final norm + lm_head -> logits -> softmax/argmax
+        if self.next_token is None:
+            self._compute_next_token()
+        if self.next_token is None:
+            raise RuntimeError("failed to compute next token")
+        self.infer_total_s = time.perf_counter() - self._infer_t0
+        return int(self.next_token)
