@@ -1,11 +1,16 @@
 {
-  "first_layer_s": 1.9983062669999754,
-  "total_s": 30.723834357999976,
-  "compute_s": 4.63712105299976,
-  "io_wait_s": 25.973964030000047,
+  "first_layer_s": 1.7987865410000268,
+  "total_s": 26.90920319399993,
+  "compute_s": 4.804804328999126,
+  "io_wait_s": 21.929877990999103,
   "masking_ratio": 0.0,
-  "peak_rss_mb": 2870.7734375,
+  "peak_rss_mb": 2877.06640625,
   "bytes_downloaded": 1937948672,
+  "throughput_mbps": 576.1444983795324,
   "layers": 22,
-  "runtime": "torch 2.11.0+cu128; cuda_available=True"
+  "elapsed_s": 26.90920319399993,
+  "runtime": "torch 2.11.0+cu128; cuda_available=True",
+  "device": "cuda",
+  "model": "TinyLlama-1.1B-Chat-v1.0",
+  "bandwidth_mbps": 1000.0
 }

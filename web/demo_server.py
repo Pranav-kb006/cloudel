@@ -38,6 +38,7 @@ LIVE_PATH = os.path.join(WEB, "live_results.json")
 RESULTS_PATH = os.path.join(WEB, "results.json")
 
 BANDWIDTH_MBPS = 1000.0
+MODEL_NAME = "TinyLlama-1.1B-Chat-v1.0"
 import torch  # noqa: E402
 RUNTIME_STR = f"torch {torch.__version__}; cuda_available={torch.cuda.is_available()}"
 
@@ -49,6 +50,7 @@ FINAL: dict | None = None
 STATUS: str = "idle"
 RUNNING: bool = False
 SCHEDULED: bool = False
+RUN_STARTED_AT: float | None = None
 RUN_LOCK = threading.Lock()
 
 RANGE_SERVER: RangeServer | None = None
@@ -72,10 +74,26 @@ def _write_json(path: str, obj) -> None:
 
 
 def _reset_state() -> None:
-    global LIVE_ROWS, FINAL, STATUS
+    global LIVE_ROWS, FINAL, STATUS, RUN_STARTED_AT
     LIVE_ROWS = []
-    FINAL = None
+    FINAL = {
+        "first_layer_s": None,
+        "total_s": None,
+        "compute_s": None,
+        "io_wait_s": None,
+        "masking_ratio": None,
+        "peak_rss_mb": None,
+        "bytes_downloaded": None,
+        "throughput_mbps": None,
+        "layers": None,
+        "elapsed_s": None,
+        "runtime": RUNTIME_STR,
+        "device": str(REAL.device),
+        "model": MODEL_NAME,
+        "bandwidth_mbps": BANDWIDTH_MBPS,
+    }
     STATUS = "running"
+    RUN_STARTED_AT = time.time()
     try:
         _write_json(LIVE_PATH, [])
     except Exception:
@@ -132,14 +150,26 @@ def run_demo() -> None:
                     compute_total += c_end - c_start
                     if i == 0:
                         first_layer = c_end - t0
+                        FINAL["first_layer_s"] = float(first_layer)
+                        _write_json(RESULTS_PATH, dict(FINAL))
 
                     ft = pref.fetch_times.get(name)
                     download_s = ft[2] if ft else blocked
+                    layer_bytes = ft[3] if ft else None
                     entry = {
+                        "index": i,
                         "layer": name,
+                        "bytes": int(layer_bytes) if layer_bytes is not None else None,
                         "download_s": float(download_s),
                         "compute_s": float(c_end - c_start),
+                        "blocked_s": float(blocked),
                         "checksum": float(result.checksum),
+                        "elapsed_s": float(c_end - t0),
+                        # exact intervals, same perf_counter clock as elapsed_s
+                        "fetch_start_s": float(ft[0] - t0) if ft else None,
+                        "fetch_end_s": float(ft[1] - t0) if ft else None,
+                        "compute_start_s": float(c_start - t0),
+                        "compute_end_s": float(c_end - t0),
                         "timestamp": time.time(),
                     }
                     LIVE_ROWS.append(entry)
@@ -153,18 +183,22 @@ def run_demo() -> None:
                     masking = max(0.0, min(1.0, 1.0 - io_wait / nominal_io))
                 sampler.stop()
                 peak = sampler.peak()
-                FINAL = {
-                    "first_layer_s": float(first_layer) if first_layer is not None else None,
-                    "total_s": float(total),
-                    "compute_s": float(compute_total),
-                    "io_wait_s": float(io_wait),
-                    "masking_ratio": float(masking),
-                    "peak_rss_mb": float(peak),
-                    "bytes_downloaded": int(nbytes),
-                    "layers": len(names),
-                    "runtime": RUNTIME_STR,
-                }
-                _write_json(RESULTS_PATH, FINAL)
+                FINAL["total_s"] = float(total)
+                FINAL["compute_s"] = float(compute_total)
+                FINAL["io_wait_s"] = float(io_wait)
+                FINAL["masking_ratio"] = float(masking)
+                FINAL["peak_rss_mb"] = float(peak)
+                FINAL["bytes_downloaded"] = int(nbytes)
+                FINAL["throughput_mbps"] = (
+                    float(nbytes * 8.0 / 1_000_000.0 / total) if total > 0 else None
+                )
+                FINAL["layers"] = len(names)
+                FINAL["elapsed_s"] = float(total)
+                FINAL["runtime"] = RUNTIME_STR
+                FINAL["device"] = str(REAL.device)
+                FINAL["model"] = MODEL_NAME
+                FINAL["bandwidth_mbps"] = BANDWIDTH_MBPS
+                _write_json(RESULTS_PATH, dict(FINAL))
                 STATUS = "done"
             finally:
                 try:
@@ -221,6 +255,8 @@ class DemoHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
@@ -236,6 +272,9 @@ class DemoHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        # No-cache so browsers always fetch the latest UI (button logic fixes)
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
@@ -276,11 +315,19 @@ class DemoHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
-        if path == "/demo.html":
+        if path in ("/", "/index.html", "/demo.html"):
             self._serve_file(os.path.join(WEB, "demo.html"), "text/html; charset=utf-8")
+            return
+        if path == "/health":
+            self._send_json({"ok": True, "status": STATUS, "rows": len(LIVE_ROWS)})
             return
         if path == "/results.json":
             with RUN_LOCK:
+                elapsed = None
+                if STATUS == "running" and RUN_STARTED_AT is not None:
+                    elapsed = time.time() - RUN_STARTED_AT
+                elif FINAL is not None:
+                    elapsed = FINAL.get("elapsed_s")
                 snapshot = {
                     "status": STATUS,
                     "rows": list(LIVE_ROWS),
@@ -288,6 +335,9 @@ class DemoHandler(http.server.BaseHTTPRequestHandler):
                     "runtime": RUNTIME_STR,
                     "n_layers": REAL.layer_count,
                     "bandwidth_mbps": BANDWIDTH_MBPS,
+                    "model": MODEL_NAME,
+                    "device": str(REAL.device),
+                    "elapsed_s": elapsed,
                 }
             self._send_json(snapshot)
             return

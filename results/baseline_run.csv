@@ -1,0 +1,2 @@
+run,mode,ttft_s,first_layer_s,total_s,io_wait_s,compute_s,masking_ratio,peak_rss_mb,bytes_downloaded,bandwidth_mbps,model,notes
+1,baseline,44.912496,28.942931,44.912496,28.001877,14.252562,0.000000,2266.652,2200119864,1000.0,tinyllama.safetensors,engine=core; manifest_parser=core; local RangeServer+loopback stand-in for MinIO+tc (production: MinIO+tc); rss_trace=results/rss/rss_baseline_run1.csv
