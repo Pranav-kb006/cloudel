@@ -1,404 +1,705 @@
-"""Live demo server for the real-model streaming engine.
+"""Enterprise Cloud Inference Dashboard Backend for Progressive Layer-Streaming Engine.
 
-Starts a RangeServer on port 8001 serving models/tinyllama.safetensors with a
-throttled link (bandwidth_mbps=1000.0), runs the REAL forward pass in a
-background thread (RealModelComputeEngine, auto device), and serves the browser
-UI on port 8000.
+Serves:
+  - Light-first multi-view SPA (web/demo.html + web/static/styles.css + web/static/app.js)
+  - Real backend APIs:
+      GET  /api/status        -> Live experiment state, experiment_id, runtime/device/MinIO status
+      GET  /api/models        -> Real discovered safetensors checkpoints with parsed header metadata
+      GET  /api/history       -> Real measured history (benchmark runs + persisted live runs)
+      GET  /api/history.csv   -> Downloadable CSV export of experiment history
+      GET  /api/ablation      -> Full measured ablation_summary.json
+      GET  /api/logs          -> Real structured system logs (timestamp, level, component, exp_id, msg)
+      POST /api/run           -> Trigger real Monolithic / Progressive / Side-by-Side execution
+      POST /api/stop          -> Request graceful cancellation of active run
+      GET  /static/<file>     -> CSS / JS assets
+      GET  /charts/<file>     -> 300-DPI measured Matplotlib charts
 
 Run:
-  cd /home/bhandi/opencode-test
-  python3 web/demo_server.py
-  # then open http://127.0.0.1:8000/demo.html
+  python web/demo_server.py
+  # Open http://127.0.0.1:8000
 """
 
 from __future__ import annotations
 
 import asyncio
+import csv
+import gc
 import http.client
 import http.server
+import io
 import json
 import os
 import sys
 import threading
 import time
 import urllib.parse
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
 from socketserver import ThreadingMixIn
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+import psutil
+import torch
 
-from src.storage.RangeServer import RangeServer  # noqa: E402
-from src.core.RealModelComputeEngine import RealModelComputeEngine  # noqa: E402
-from src.bench.BenchmarkHarness import FallbackPrefetcher, RSSSampler  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-MODEL = os.path.join(ROOT, "models", "tinyllama.safetensors")
-WEB = os.path.dirname(os.path.abspath(__file__))
-LIVE_PATH = os.path.join(WEB, "live_results.json")
-RESULTS_PATH = os.path.join(WEB, "results.json")
+from src.bench.ablation_suite import EvictingAsyncPrefetcher, RSSMonitor, _forward_order
+from src.core.RealModelComputeEngine import RealModelComputeEngine
+from src.storage.RangeServer import RangeServer
+from src.storage.s3_adapter import check_minio_available
+from src.storage.safetensors_ranges import parse_safetensors
 
-BANDWIDTH_MBPS = 1000.0
-MODEL_NAME = "TinyLlama-1.1B-Chat-v1.0"
-import torch  # noqa: E402
-RUNTIME_STR = f"torch {torch.__version__}; cuda_available={torch.cuda.is_available()}"
+WEB_DIR = Path(__file__).resolve().parent
+STATIC_DIR = WEB_DIR / "static"
+MODELS_DIR = ROOT / "models"
+RESULTS_DIR = ROOT / "results"
+HISTORY_FILE = RESULTS_DIR / "experiment_history.json"
 
-REAL = RealModelComputeEngine(MODEL)
-
-# --- shared state -----------------------------------------------------------
-LIVE_ROWS: list[dict] = []
-FINAL: dict | None = None
-STATUS: str = "idle"
-RUNNING: bool = False
-SCHEDULED: bool = False
-RUN_STARTED_AT: float | None = None
-RUN_LOCK = threading.Lock()
-
-RANGE_SERVER: RangeServer | None = None
+STATE_LOCK = threading.Lock()
+ENGINE_CACHE: dict[str, RealModelComputeEngine] = {}
+LOGS: deque[dict[str, str]] = deque(maxlen=600)
+STOP_EVENT = threading.Event()
+EXP_COUNTER = 0
 
 
-def _forward_order(keys: list[str]) -> list[str]:
-    def index(name: str) -> int:
-        tail = name.rsplit(".", 1)[-1]
-        return int(tail) if tail.isdigit() else 1 << 30
-
-    return sorted(keys, key=lambda n: (index(n), n))
-
-
-def _write_json(path: str, obj) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(obj, fh, indent=2, default=str)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
-
-
-def _reset_state() -> None:
-    global LIVE_ROWS, FINAL, STATUS, RUN_STARTED_AT
-    LIVE_ROWS = []
-    FINAL = {
-        "first_layer_s": None,
-        "total_s": None,
-        "compute_s": None,
-        "io_wait_s": None,
-        "masking_ratio": None,
-        "peak_rss_mb": None,
-        "bytes_downloaded": None,
-        "throughput_mbps": None,
-        "layers": None,
-        "elapsed_s": None,
-        "runtime": RUNTIME_STR,
-        "device": str(REAL.device),
-        "model": MODEL_NAME,
-        "bandwidth_mbps": BANDWIDTH_MBPS,
+def emit_log(level: str, component: str, message: str, experiment_id: str = "SYSTEM") -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "level": level.upper(),
+        "component": component,
+        "experiment_id": experiment_id,
+        "message": message,
     }
-    STATUS = "running"
-    RUN_STARTED_AT = time.time()
-    try:
-        _write_json(LIVE_PATH, [])
-    except Exception:
-        pass
-    try:
-        if os.path.exists(RESULTS_PATH):
-            os.remove(RESULTS_PATH)
-    except Exception:
-        pass
+    with STATE_LOCK:
+        LOGS.append(entry)
 
 
-def run_demo() -> None:
-    global LIVE_ROWS, FINAL, STATUS, RUNNING
-
-    _reset_state()
-    with RUN_LOCK:
-        RUNNING = True
-
-    try:
-        url = RANGE_SERVER.url if RANGE_SERVER is not None else "http://127.0.0.1:8001/model.safetensors"
-        names = _forward_order(REAL.layer_keys)
-        layers = {
-            n: {
-                "start": RANGE_SERVER.info["layers"][n]["start"],
-                "end": RANGE_SERVER.info["layers"][n]["end"],
-                "dtype": "BF16",
-            }
-            for n in names
-        }
-
-        REAL._init_hidden()
-
-        async def _run() -> None:
-            global LIVE_ROWS, FINAL, STATUS
-            pref = FallbackPrefetcher(url, layers, lookahead=2, timeout=600)
-            sampler = RSSSampler(interval=0.05)
-            sampler.start()
-            t0 = time.perf_counter()
-            io_wait = 0.0
-            compute_total = 0.0
-            first_layer = None
-            try:
-                await pref.start()
-                for i, name in enumerate(names):
-                    want = time.perf_counter()
-                    payload = await pref.get(name)
-                    ready = time.perf_counter()
-                    blocked = max(0.0, ready - want)
-                    io_wait += blocked
-
-                    c_start = time.perf_counter()
-                    result = await asyncio.to_thread(REAL.run_layer, name, payload)
-                    c_end = time.perf_counter()
-                    compute_total += c_end - c_start
-                    if i == 0:
-                        first_layer = c_end - t0
-                        FINAL["first_layer_s"] = float(first_layer)
-                        _write_json(RESULTS_PATH, dict(FINAL))
-
-                    ft = pref.fetch_times.get(name)
-                    download_s = ft[2] if ft else blocked
-                    layer_bytes = ft[3] if ft else None
-                    entry = {
-                        "index": i,
-                        "layer": name,
-                        "bytes": int(layer_bytes) if layer_bytes is not None else None,
-                        "download_s": float(download_s),
-                        "compute_s": float(c_end - c_start),
-                        "blocked_s": float(blocked),
-                        "checksum": float(result.checksum),
-                        "elapsed_s": float(c_end - t0),
-                        # exact intervals, same perf_counter clock as elapsed_s
-                        "fetch_start_s": float(ft[0] - t0) if ft else None,
-                        "fetch_end_s": float(ft[1] - t0) if ft else None,
-                        "compute_start_s": float(c_start - t0),
-                        "compute_end_s": float(c_end - t0),
-                        "timestamp": time.time(),
-                    }
-                    LIVE_ROWS.append(entry)
-                    _write_json(LIVE_PATH, list(LIVE_ROWS))
-
-                total = time.perf_counter() - t0
-                nbytes = pref.total_bytes
-                nominal_io = (nbytes / (BANDWIDTH_MBPS * 1_000_000.0 / 8.0)) if BANDWIDTH_MBPS > 0 else 0.0
-                masking = 0.0
-                if nominal_io > 0:
-                    masking = max(0.0, min(1.0, 1.0 - io_wait / nominal_io))
-                sampler.stop()
-                peak = sampler.peak()
-                FINAL["total_s"] = float(total)
-                FINAL["compute_s"] = float(compute_total)
-                FINAL["io_wait_s"] = float(io_wait)
-                FINAL["masking_ratio"] = float(masking)
-                FINAL["peak_rss_mb"] = float(peak)
-                FINAL["bytes_downloaded"] = int(nbytes)
-                FINAL["throughput_mbps"] = (
-                    float(nbytes * 8.0 / 1_000_000.0 / total) if total > 0 else None
-                )
-                FINAL["layers"] = len(names)
-                FINAL["elapsed_s"] = float(total)
-                FINAL["runtime"] = RUNTIME_STR
-                FINAL["device"] = str(REAL.device)
-                FINAL["model"] = MODEL_NAME
-                FINAL["bandwidth_mbps"] = BANDWIDTH_MBPS
-                _write_json(RESULTS_PATH, dict(FINAL))
-                STATUS = "done"
-            finally:
-                try:
-                    await pref.stop()
-                except Exception:
-                    pass
-                try:
-                    sampler.stop()
-                except Exception:
-                    pass
-
-        loop = asyncio.new_event_loop()
+def discover_models() -> list[dict[str, object]]:
+    found: list[dict[str, object]] = []
+    if not MODELS_DIR.exists():
+        return found
+    for p in sorted(MODELS_DIR.glob("*.safetensors")):
         try:
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(_run())
-        finally:
-            loop.close()
-    except Exception as exc:  # noqa: BLE001
-        STATUS = "error: " + repr(exc)
-        import traceback
-        traceback.print_exc()
+            info = parse_safetensors(str(p))
+            layers = [k for k in info.get("layers", {}) if k.startswith("model.layers.")]
+            is_synth = "synthetic" in p.name.lower()
+            first_tensor = next(iter(info.get("tensors", {}).values()), {})
+            dtype = first_tensor.get("dtype", "BF16")
+            hidden = 0
+            for tname, tmeta in info.get("tensors", {}).items():
+                if tname.endswith("q_proj.weight") and len(tmeta.get("shape", [])) == 2:
+                    hidden = int(tmeta["shape"][1])
+                    break
+            found.append({
+                "name": p.name,
+                "path": str(p),
+                "architecture": "Synthetic FP32 Benchmark" if is_synth else "Llama Decoder (RoPE + GQA + SwiGLU)",
+                "num_layers": len(layers) if layers else len(info.get("layers", {})),
+                "hidden_size": hidden,
+                "size_mb": round(p.stat().st_size / (1024 * 1024), 2),
+                "size_bytes": p.stat().st_size,
+                "format": "SafeTensors",
+                "dtype": dtype,
+                "storage": "Local Object Store / RangeServer",
+                "available": True,
+                "runnable": not is_synth,
+            })
+        except Exception as exc:
+            emit_log("WARNING", "ModelRegistry", f"Failed to inspect {p.name}: {exc}")
+    return found
+
+
+AVAILABLE_MODELS = discover_models()
+RUNNABLE_MODELS = [m for m in AVAILABLE_MODELS if m.get("runnable")]
+DEFAULT_MODEL = (
+    next((str(m["path"]) for m in RUNNABLE_MODELS if "llama_12layer" in str(m["name"])), None)
+    or (str(RUNNABLE_MODELS[0]["path"]) if RUNNABLE_MODELS else str(MODELS_DIR / "llama_12layer_140m.safetensors"))
+)
+
+
+def get_engine(model_path: str) -> RealModelComputeEngine:
+    if model_path not in ENGINE_CACHE:
+        emit_log("INFO", "ComputeEngine", f"Initializing RealModelComputeEngine for {os.path.basename(model_path)}")
+        ENGINE_CACHE[model_path] = RealModelComputeEngine(model_path)
+    return ENGINE_CACHE[model_path]
+
+
+def load_history() -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    ab_path = RESULTS_DIR / "ablation_summary.json"
+    if ab_path.exists():
+        try:
+            ab = json.loads(ab_path.read_text(encoding="utf-8"))
+            model_name = ab.get("model", "llama_12layer_140m.safetensors")
+            for idx, r in enumerate(ab.get("bandwidth_sweep", []), start=1):
+                records.append({
+                    "experiment_id": f"BENCH-BW-{idx:02d}",
+                    "source": "benchmark",
+                    "model": model_name,
+                    "bandwidth_mbps": r["bandwidth_mbps"],
+                    "lookahead": 2,
+                    "seq_len": 128,
+                    "mode": "compare",
+                    "mono_ttft_s": r["mono_ttft_s"],
+                    "prog_ttft_s": r["prog_ttft_s"],
+                    "ttft_reduction_pct": r["ttft_reduction_pct"],
+                    "speedup_x": r["speedup_x"],
+                    "first_layer_speedup_x": r["first_layer_speedup_x"],
+                    "masking_ratio": r["prog_masking_ratio"],
+                    "mono_delta_rss_mb": r["mono_delta_rss_mb"],
+                    "prog_delta_rss_mb": r["prog_delta_rss_mb"],
+                    "rss_delta_reduction_pct": r["rss_delta_reduction_pct"],
+                    "status": "completed",
+                    "timestamp": "2026-11-24T11:59:00Z",
+                })
+            for idx, r in enumerate(ab.get("lookahead_ablation", []), start=1):
+                records.append({
+                    "experiment_id": f"BENCH-LA-{idx:02d}",
+                    "source": "benchmark",
+                    "model": model_name,
+                    "bandwidth_mbps": 250.0,
+                    "lookahead": r["lookahead_k"],
+                    "seq_len": 128,
+                    "mode": "progressive",
+                    "mono_ttft_s": None,
+                    "prog_ttft_s": r["ttft_full_s"],
+                    "ttft_reduction_pct": None,
+                    "speedup_x": None,
+                    "first_layer_speedup_x": None,
+                    "masking_ratio": r["masking_ratio"],
+                    "mono_delta_rss_mb": None,
+                    "prog_delta_rss_mb": r["delta_rss_mb"],
+                    "rss_delta_reduction_pct": None,
+                    "status": "completed",
+                    "timestamp": "2026-11-24T11:59:30Z",
+                })
+        except Exception as exc:
+            emit_log("WARNING", "History", f"Failed to load ablation history: {exc}")
+
+    if HISTORY_FILE.exists():
+        try:
+            live_recs = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+            if isinstance(live_recs, list):
+                records.extend(live_recs)
+        except Exception:
+            pass
+    return records
+
+
+def append_live_history(rec: dict[str, object]) -> None:
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    existing: list[dict[str, object]] = []
+    if HISTORY_FILE.exists():
+        try:
+            existing = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            existing = []
+    existing.insert(0, rec)
+    HISTORY_FILE.write_text(json.dumps(existing[:100], indent=2), encoding="utf-8")
+
+
+STATE: dict[str, object] = {
+    "status": "idle",
+    "phase": "ready",
+    "experiment_id": "BENCH-BW-02",
+    "started_at": None,
+    "elapsed_s": 0.0,
+    "error": None,
+    "config": {
+        "model": os.path.basename(DEFAULT_MODEL),
+        "bandwidth_mbps": 250.0,
+        "lookahead": 2,
+        "seq_len": 128,
+        "evict": True,
+        "mode": "compare",
+    },
+    "runtime": {
+        "torch": torch.__version__,
+        "python": sys.version.split()[0],
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "minio_available": check_minio_available(),
+        "minio_endpoint": os.environ.get("MINIO_ENDPOINT", "http://127.0.0.1:9000"),
+        "storage_backend": "MinIO S3 + RangeServer" if check_minio_available() else "HTTP RangeServer (RFC 7233)",
+        "models": AVAILABLE_MODELS,
+    },
+    "monolithic": None,
+    "progressive": None,
+    "comparison": None,
+    "live_layers": [],
+    "active_layer": None,
+    "prefetching_layer": None,
+    "buffer_occupancy": 0,
+    "eviction_count": 0,
+    "progress": 0.0,
+}
+
+RUNNING = False
+
+
+def _run_monolithic_live(
+    url: str, engine: RealModelComputeEngine, layer_names: list[str],
+    model_path: str, seq_len: int, bandwidth_mbps: float, exp_id: str,
+) -> dict:
+    gc.collect()
+    parsed = urllib.parse.urlparse(url)
+    mon = RSSMonitor(interval=0.05)
+    mon.start()
+    t0 = time.perf_counter()
+
+    emit_log("INFO", "MonolithicLoader", f"Starting blocking full-checkpoint download ({bandwidth_mbps} Mbps)", exp_id)
+    with STATE_LOCK:
+        STATE["phase"] = "monolithic_download"
+        STATE["live_layers"] = []
+        STATE["active_layer"] = "FULL_DOWNLOAD"
+
+    dl_start = time.perf_counter()
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=300)
+    try:
+        conn.request("GET", parsed.path)
+        resp = conn.getresponse()
+        full_blob = resp.read()
     finally:
-        with RUN_LOCK:
+        conn.close()
+    dl_end = time.perf_counter()
+    download_s = dl_end - dl_start
+    emit_log("INFO", "MonolithicLoader", f"Completed full download: {len(full_blob)/1048576:.2f} MiB in {download_s:.2f}s", exp_id)
+
+    with STATE_LOCK:
+        STATE["phase"] = "monolithic_compute"
+
+    engine._init_hidden(seq_len=seq_len)
+    per_layer = []
+    compute_total = 0.0
+    first_layer_s = 0.0
+
+    for i, name in enumerate(layer_names):
+        if STOP_EVENT.is_set():
+            raise RuntimeError("Experiment stopped by user")
+        desc = engine.all_layers_info[name]
+        c_start = time.perf_counter()
+        payload = full_blob[desc["start"]:desc["end"]]
+        res = engine.run_layer(name, payload)
+        c_end = time.perf_counter()
+        compute_total += (c_end - c_start)
+        if i == 0:
+            first_layer_s = c_end - t0
+        row = {
+            "index": i,
+            "layer": name,
+            "bytes": desc["end"] - desc["start"],
+            "fetch_start_s": round(dl_start - t0, 4),
+            "fetch_end_s": round(dl_end - t0, 4),
+            "download_s": round(download_s, 4),
+            "blocked_s": round(download_s if i == 0 else 0.0, 4),
+            "compute_start_s": round(c_start - t0, 4),
+            "compute_end_s": round(c_end - t0, 4),
+            "compute_s": round(c_end - c_start, 4),
+            "checksum": round(float(res.checksum), 5),
+        }
+        per_layer.append(row)
+        with STATE_LOCK:
+            STATE["live_layers"] = list(per_layer)
+            STATE["active_layer"] = name
+            STATE["elapsed_s"] = round(time.perf_counter() - t0, 2)
+            STATE["progress"] = round(0.5 * (i + 1) / len(layer_names), 3)
+
+    total_s = time.perf_counter() - t0
+    rss = mon.stop()
+    rss_trace = [[round(t, 3), round(max(0.0, m - rss["baseline_rss_mb"]), 2)] for t, m in mon.samples]
+    del full_blob
+    gc.collect()
+    emit_log("INFO", "MonolithicLoader", f"Monolithic pass finished: TTFT={total_s:.2f}s, Peak dRSS={rss['delta_rss_mb']:.1f} MB", exp_id)
+
+    return {
+        "mode": "monolithic",
+        "bandwidth_mbps": bandwidth_mbps,
+        "seq_len": seq_len,
+        "first_layer_s": round(first_layer_s, 4),
+        "ttft_full_s": round(total_s, 4),
+        "download_s": round(download_s, 4),
+        "compute_s": round(compute_total, 4),
+        "io_wait_s": round(download_s, 4),
+        "masking_ratio": 0.0,
+        "bytes_downloaded": os.path.getsize(model_path),
+        "http_requests": 1,
+        **rss,
+        "per_layer": per_layer,
+        "rss_trace": rss_trace,
+    }
+
+
+def _run_progressive_live(
+    url: str, engine: RealModelComputeEngine, layer_names: list[str],
+    seq_len: int, bandwidth_mbps: float, lookahead: int, evict: bool,
+    exp_id: str, base_progress: float = 0.0, progress_span: float = 1.0,
+) -> dict:
+    gc.collect()
+    layers_meta = {
+        n: {
+            "start": engine.all_layers_info[n]["start"],
+            "end": engine.all_layers_info[n]["end"],
+        }
+        for n in layer_names
+    }
+    engine._init_hidden(seq_len=seq_len)
+    retained = []
+
+    emit_log(
+        "INFO", "AsyncPrefetcher",
+        f"Starting progressive stream: {len(layer_names)} layers, K={lookahead}, seq={seq_len}, evict={evict}, bw={bandwidth_mbps} Mbps",
+        exp_id,
+    )
+    with STATE_LOCK:
+        STATE["phase"] = "progressive_streaming"
+        STATE["live_layers"] = []
+        STATE["eviction_count"] = 0
+
+    mon = RSSMonitor(interval=0.05)
+    mon.start()
+    t0 = time.perf_counter()
+
+    async def _exec():
+        pref = EvictingAsyncPrefetcher(url, layers_meta, lookahead=lookahead)
+        await pref.start(t0)
+        per_layer = []
+        io_wait = 0.0
+        compute_total = 0.0
+        first_layer_s = 0.0
+        evictions = 0
+        try:
+            for i, name in enumerate(layer_names):
+                if STOP_EVENT.is_set():
+                    raise RuntimeError("Experiment stopped by user")
+                next_name = layer_names[i + 1] if i + 1 < len(layer_names) else None
+                with STATE_LOCK:
+                    STATE["active_layer"] = name
+                    STATE["prefetching_layer"] = next_name
+                    STATE["buffer_occupancy"] = min(lookahead, len(layer_names) - i)
+
+                w0 = time.perf_counter()
+                payload = await pref.pop(name)
+                w1 = time.perf_counter()
+                blocked = max(0.0, w1 - w0)
+                io_wait += blocked
+
+                c0 = time.perf_counter()
+                res = await asyncio.to_thread(engine.run_layer, name, payload)
+                c1 = time.perf_counter()
+                compute_total += (c1 - c0)
+                if i == 0:
+                    first_layer_s = c1 - t0
+
+                if evict:
+                    del payload
+                    evictions += 1
+                else:
+                    retained.append(payload)
+                pref.release_slot()
+
+                fm = pref.fetch_meta.get(name, {})
+                row = {
+                    "index": i,
+                    "layer": name,
+                    "bytes": int(fm.get("bytes", 0)),
+                    "fetch_start_s": round(float(fm.get("fetch_start_s", 0.0)), 4),
+                    "fetch_end_s": round(float(fm.get("fetch_end_s", 0.0)), 4),
+                    "download_s": round(float(fm.get("download_s", 0.0)), 4),
+                    "blocked_s": round(blocked, 4),
+                    "compute_start_s": round(c0 - t0, 4),
+                    "compute_end_s": round(c1 - t0, 4),
+                    "compute_s": round(c1 - c0, 4),
+                    "checksum": round(float(res.checksum), 5),
+                }
+                per_layer.append(row)
+                emit_log(
+                    "DEBUG", "PipelineDriver",
+                    f"{name}: fetch={row['download_s']:.3f}s wait={blocked:.3f}s compute={row['compute_s']:.3f}s |h|={row['checksum']:.4f}"
+                    + (" [evicted]" if evict else ""),
+                    exp_id,
+                )
+                with STATE_LOCK:
+                    STATE["live_layers"] = list(per_layer)
+                    STATE["eviction_count"] = evictions
+                    STATE["elapsed_s"] = round(time.perf_counter() - t0, 2)
+                    STATE["progress"] = round(base_progress + progress_span * (i + 1) / len(layer_names), 3)
+            return per_layer, first_layer_s, compute_total, io_wait, pref.total_bytes, evictions
+        finally:
+            await pref.stop()
+
+    per_layer, first_layer_s, compute_total, io_wait, total_bytes, evictions = asyncio.run(_exec())
+    total_s = time.perf_counter() - t0
+    rss = mon.stop()
+    rss_trace = [[round(t, 3), round(max(0.0, m - rss["baseline_rss_mb"]), 2)] for t, m in mon.samples]
+    retained.clear()
+    gc.collect()
+
+    total_net_s = sum(r["download_s"] for r in per_layer)
+    masking_ratio = max(0.0, min(1.0, 1.0 - (io_wait / total_net_s))) if total_net_s > 0 else 0.0
+    emit_log(
+        "INFO", "PipelineDriver",
+        f"Progressive pass finished: TTFT={total_s:.2f}s, Masking={masking_ratio*100:.1f}%, Peak dRSS={rss['delta_rss_mb']:.1f} MB, Evictions={evictions}",
+        exp_id,
+    )
+
+    return {
+        "mode": "progressive_evict" if evict else "progressive_retain",
+        "bandwidth_mbps": bandwidth_mbps,
+        "seq_len": seq_len,
+        "lookahead": lookahead,
+        "evict": evict,
+        "eviction_count": evictions,
+        "first_layer_s": round(first_layer_s, 4),
+        "ttft_full_s": round(total_s, 4),
+        "download_s": round(total_net_s, 4),
+        "compute_s": round(compute_total, 4),
+        "io_wait_s": round(io_wait, 4),
+        "masking_ratio": round(masking_ratio, 4),
+        "bytes_downloaded": total_bytes,
+        "http_requests": len(per_layer),
+        **rss,
+        "per_layer": per_layer,
+        "rss_trace": rss_trace,
+    }
+
+
+def _worker_run(cfg: dict, exp_id: str) -> None:
+    global RUNNING
+    t_run_start = time.perf_counter()
+    try:
+        model_name = str(cfg.get("model") or os.path.basename(DEFAULT_MODEL))
+        model_path = str(MODELS_DIR / model_name)
+        if not os.path.exists(model_path):
+            model_path = DEFAULT_MODEL
+        bw = max(25.0, min(2000.0, float(cfg.get("bandwidth_mbps", 250.0))))
+        lookahead = max(1, min(6, int(cfg.get("lookahead", 2))))
+        seq_len = max(1, min(512, int(cfg.get("seq_len", 128))))
+        evict = bool(cfg.get("evict", True))
+        mode = str(cfg.get("mode", "compare"))
+
+        engine = get_engine(model_path)
+        layer_names = _forward_order(engine.layer_keys)
+
+        srv = RangeServer(model_path, host="127.0.0.1", port=0, bandwidth_mbps=bw)
+        srv.start()
+        emit_log("INFO", "RangeServer", f"Bound throttled HTTP RangeServer at {srv.url} ({bw} Mbps)", exp_id)
+        try:
+            mono = None
+            prog = None
+            if mode in ("compare", "monolithic"):
+                mono = _run_monolithic_live(srv.url, engine, layer_names, model_path, seq_len, bw, exp_id)
+                with STATE_LOCK:
+                    STATE["monolithic"] = mono
+            if mode in ("compare", "progressive"):
+                base_p = 0.5 if mode == "compare" else 0.0
+                span_p = 0.5 if mode == "compare" else 1.0
+                prog = _run_progressive_live(srv.url, engine, layer_names, seq_len, bw, lookahead, evict, exp_id, base_p, span_p)
+                with STATE_LOCK:
+                    STATE["progressive"] = prog
+
+            comp = None
+            if mono and prog:
+                comp = {
+                    "ttft_reduction_pct": round((1.0 - prog["ttft_full_s"] / mono["ttft_full_s"]) * 100.0, 2),
+                    "speedup_x": round(mono["ttft_full_s"] / prog["ttft_full_s"], 3),
+                    "first_layer_speedup_x": round(mono["first_layer_s"] / prog["first_layer_s"], 2),
+                    "masking_pct": round(prog["masking_ratio"] * 100.0, 2),
+                    "rss_delta_saved_mb": round(max(0.0, mono["delta_rss_mb"] - prog["delta_rss_mb"]), 2),
+                    "rss_delta_reduction_pct": round(
+                        (1.0 - prog["delta_rss_mb"] / max(mono["delta_rss_mb"], 1.0)) * 100.0, 2
+                    ),
+                }
+
+            append_live_history({
+                "experiment_id": exp_id,
+                "source": "live",
+                "model": os.path.basename(model_path),
+                "bandwidth_mbps": bw,
+                "lookahead": lookahead,
+                "seq_len": seq_len,
+                "mode": mode,
+                "mono_ttft_s": mono["ttft_full_s"] if mono else None,
+                "prog_ttft_s": prog["ttft_full_s"] if prog else None,
+                "ttft_reduction_pct": comp["ttft_reduction_pct"] if comp else None,
+                "speedup_x": comp["speedup_x"] if comp else None,
+                "first_layer_speedup_x": comp["first_layer_speedup_x"] if comp else None,
+                "masking_ratio": prog["masking_ratio"] if prog else 0.0,
+                "mono_delta_rss_mb": mono["delta_rss_mb"] if mono else None,
+                "prog_delta_rss_mb": prog["delta_rss_mb"] if prog else None,
+                "rss_delta_reduction_pct": comp["rss_delta_reduction_pct"] if comp else None,
+                "status": "completed",
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            })
+
+            with STATE_LOCK:
+                STATE["comparison"] = comp
+                STATE["status"] = "done"
+                STATE["phase"] = "completed"
+                STATE["active_layer"] = None
+                STATE["prefetching_layer"] = None
+                STATE["buffer_occupancy"] = 0
+                STATE["elapsed_s"] = round(time.perf_counter() - t_run_start, 2)
+                STATE["progress"] = 1.0
+        finally:
+            srv.stop()
+            emit_log("INFO", "RangeServer", "Stopped ephemeral RangeServer", exp_id)
+    except Exception as exc:
+        emit_log("ERROR", "ExperimentRunner", str(exc), exp_id)
+        with STATE_LOCK:
+            STATE["status"] = "error"
+            STATE["phase"] = "failed"
+            STATE["error"] = str(exc)
+            STATE["active_layer"] = None
+            STATE["prefetching_layer"] = None
+    finally:
+        STOP_EVENT.clear()
+        with STATE_LOCK:
             RUNNING = False
 
 
-def trigger_run() -> bool:
-    global SCHEDULED
-    with RUN_LOCK:
-        if RUNNING or SCHEDULED:
-            return False
-        SCHEDULED = True
-
-    def worker() -> None:
-        global SCHEDULED
-        try:
-            run_demo()
-        finally:
-            with RUN_LOCK:
-                SCHEDULED = False
-
-    threading.Thread(target=worker, daemon=True, name="DemoRun").start()
-    return True
+def trigger_run(cfg: dict) -> tuple[bool, str]:
+    global RUNNING, EXP_COUNTER
+    with STATE_LOCK:
+        if RUNNING:
+            return False, str(STATE["experiment_id"])
+        RUNNING = True
+        STOP_EVENT.clear()
+        EXP_COUNTER += 1
+        exp_id = f"EXP-{datetime.now().strftime('%H%M%S')}-{EXP_COUNTER:02d}"
+        STATE["status"] = "running"
+        STATE["phase"] = "initializing"
+        STATE["experiment_id"] = exp_id
+        STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        STATE["elapsed_s"] = 0.0
+        STATE["error"] = None
+        STATE["progress"] = 0.02
+        STATE["config"] = dict(cfg)
+        if cfg.get("mode") == "compare":
+            STATE["monolithic"] = None
+            STATE["progressive"] = None
+            STATE["comparison"] = None
+    threading.Thread(target=_worker_run, args=(dict(cfg), exp_id), daemon=True).start()
+    return True, exp_id
 
 
 class DemoHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):  # noqa: A003
+    def log_message(self, fmt, *args):
         return
 
-    def _send_json(self, obj, status: int = 200) -> None:
-        body = json.dumps(obj, default=str).encode("utf-8")
+    def _send_bytes(self, raw: bytes, content_type: str, status: int = 200, extra_headers: dict | None = None) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
-        self.wfile.flush()
-
-    def _serve_file(self, path: str, content_type: str) -> None:
-        try:
-            with open(path, "rb") as fh:
-                data = fh.read()
-        except FileNotFoundError:
-            self.send_error(404, "not found")
-            return
-        self.send_response(200)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        # No-cache so browsers always fetch the latest UI (button logic fixes)
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(data)
-        self.wfile.flush()
-
-    def _proxy(self) -> None:
-        try:
-            conn = http.client.HTTPConnection("127.0.0.1", 8001, timeout=600)
-            headers = {}
-            for k, v in self.headers.items():
-                if k.lower() in ("host", "connection", "content-length"):
-                    continue
-                headers[k] = v
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            body = self.rfile.read(length) if length > 0 else None
-            conn.request(self.command, self.path, body=body, headers=headers)
-            resp = conn.getresponse()
-            self.send_response(resp.status)
-            for k, v in resp.getheaders():
-                if k.lower() in ("connection", "transfer-encoding"):
-                    continue
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        if extra_headers:
+            for k, v in extra_headers.items():
                 self.send_header(k, v)
-            self.send_header("Connection", "close")
-            self.end_headers()
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
-            conn.close()
-        except Exception as exc:  # noqa: BLE001
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _send_json(self, obj: object, status: int = 200) -> None:
+        self._send_bytes(json.dumps(obj).encode("utf-8"), "application/json; charset=utf-8", status)
+
+    def _send_file(self, path: Path, content_type: str) -> None:
+        if not path.exists():
+            self.send_error(404)
+            return
+        self._send_bytes(path.read_bytes(), content_type)
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path in ("/", "/demo.html", "/index.html"):
+            self._send_file(WEB_DIR / "demo.html", "text/html; charset=utf-8")
+            return
+        if path == "/api/status":
+            with STATE_LOCK:
+                snap = dict(STATE)
+            self._send_json(snap)
+            return
+        if path == "/api/models":
+            self._send_json({"models": discover_models()})
+            return
+        if path == "/api/history":
+            self._send_json({"history": load_history()})
+            return
+        if path == "/api/history.csv":
+            rows = load_history()
+            buf = io.StringIO()
+            if rows:
+                w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+                w.writeheader()
+                w.writerows(rows)
+            self._send_bytes(
+                buf.getvalue().encode("utf-8"),
+                "text/csv; charset=utf-8",
+                extra_headers={"Content-Disposition": "attachment; filename=experiment_history.csv"},
+            )
+            return
+        if path == "/api/logs":
+            with STATE_LOCK:
+                logs_list = list(LOGS)
+            self._send_json({"logs": logs_list})
+            return
+        if path == "/api/ablation":
+            ab_path = RESULTS_DIR / "ablation_summary.json"
+            if ab_path.exists():
+                self._send_file(ab_path, "application/json; charset=utf-8")
+            else:
+                self._send_json({"available": False}, 200)
+            return
+        if path.startswith("/static/"):
+            fname = os.path.basename(path)
+            ctype = "text/css; charset=utf-8" if fname.endswith(".css") else "application/javascript; charset=utf-8"
+            self._send_file(STATIC_DIR / fname, ctype)
+            return
+        if path.startswith("/charts/"):
+            fname = os.path.basename(path)
+            self._send_file(RESULTS_DIR / "charts" / fname, "image/png")
+            return
+        self.send_error(404)
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/run":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length > 0 else b"{}"
             try:
-                self.send_error(502, str(exc))
+                cfg = json.loads(body.decode("utf-8"))
             except Exception:
-                pass
-
-    def do_GET(self):  # noqa: N802
-        parsed = urllib.parse.urlsplit(self.path)
-        path = parsed.path
-        if path in ("/", "/index.html", "/demo.html"):
-            self._serve_file(os.path.join(WEB, "demo.html"), "text/html; charset=utf-8")
+                cfg = {}
+            started, exp_id = trigger_run(cfg)
+            self._send_json({"started": started, "experiment_id": exp_id}, 200 if started else 409)
             return
-        if path == "/health":
-            self._send_json({"ok": True, "status": STATUS, "rows": len(LIVE_ROWS)})
+        if parsed.path == "/api/stop":
+            STOP_EVENT.set()
+            emit_log("WARNING", "ExperimentRunner", "Stop requested by operator", str(STATE.get("experiment_id", "SYSTEM")))
+            self._send_json({"stopping": True})
             return
-        if path == "/results.json":
-            with RUN_LOCK:
-                elapsed = None
-                if STATUS == "running" and RUN_STARTED_AT is not None:
-                    elapsed = time.time() - RUN_STARTED_AT
-                elif FINAL is not None:
-                    elapsed = FINAL.get("elapsed_s")
-                snapshot = {
-                    "status": STATUS,
-                    "rows": list(LIVE_ROWS),
-                    "final": FINAL,
-                    "runtime": RUNTIME_STR,
-                    "n_layers": REAL.layer_count,
-                    "bandwidth_mbps": BANDWIDTH_MBPS,
-                    "model": MODEL_NAME,
-                    "device": str(REAL.device),
-                    "elapsed_s": elapsed,
-                }
-            self._send_json(snapshot)
-            return
-        if path == "/live_results.json":
-            with RUN_LOCK:
-                self._send_json(list(LIVE_ROWS))
-            return
-        if path == "/run":
-            # allow GET trigger too
-            started = trigger_run()
-            self._send_json({"started": started, "status": STATUS})
-            return
-        if path == "/status":
-            with RUN_LOCK:
-                self._send_json({"status": STATUS, "running": RUNNING, "rows": len(LIVE_ROWS)})
-            return
-        # proxy model route (and anything else) to port 8001
-        self._proxy()
-
-    def do_POST(self):  # noqa: N802
-        parsed = urllib.parse.urlsplit(self.path)
-        path = parsed.path
-        if path == "/run":
-            started = trigger_run()
-            self._send_json({"started": started, "status": STATUS})
-            return
-        self._proxy()
-
-    def do_HEAD(self):  # noqa: N802
-        self._proxy()
+        self.send_error(404)
 
 
-class ThreadingServer(ThreadingMixIn, http.server.HTTPServer):
+class ThreadedHTTPServer(ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
 
 def main() -> int:
-    global RANGE_SERVER
-
-    # 1. RangeServer on port 8001
-    RANGE_SERVER = RangeServer(
-        MODEL, host="127.0.0.1", port=8001, bandwidth_mbps=BANDWIDTH_MBPS, log_requests=False
-    ).start()
-    print(f"RangeServer: {RANGE_SERVER.url} (throttle {BANDWIDTH_MBPS:g} Mbit/s)", flush=True)
-
-    # 2. HTTP server on port 8000
-    httpd = ThreadingServer(("127.0.0.1", 8000), DemoHandler)
-    print("Demo UI: http://127.0.0.1:8000/demo.html", flush=True)
-
-    # 3. auto-run demo in background
-    trigger_run()
-
+    port = int(os.environ.get("PORT", "8000"))
+    emit_log("INFO", "Server", f"Initialized Progressive AI Cloud Infrastructure Dashboard on port {port}")
+    emit_log("INFO", "ModelRegistry", f"Discovered {len(AVAILABLE_MODELS)} safetensors checkpoints ({len(RUNNABLE_MODELS)} runnable)")
+    print(f"Progressive AI Cloud Infrastructure Dashboard -> http://127.0.0.1:{port}")
+    srv = ThreadedHTTPServer(("0.0.0.0", port), DemoHandler)
     try:
-        httpd.serve_forever()
+        srv.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopping...", flush=True)
+        print("\nShutting down...")
     finally:
-        httpd.server_close()
-        if RANGE_SERVER is not None:
-            RANGE_SERVER.stop()
+        srv.server_close()
     return 0
 
 

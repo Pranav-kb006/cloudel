@@ -2,6 +2,11 @@
 __pycache__/
 *.py[cod]
 
-# Large downloaded model artifact (2.1 GB; exceeds GitHub's 100 MB file limit).
-# Regenerate/fetch locally; synthetic models and manifests are committed.
+# Large model artifacts (exceed GitHub's 100 MB limit; regenerate locally)
 models/tinyllama.safetensors
+models/llama_12layer_140m.safetensors
+
+# Local presentation/demo artifacts & runtime history
+deliverables/
+COMPLETE_PROJECT_ENCYCLOPEDIA.md
+results/experiment_history.json

@@ -64,16 +64,12 @@ def _rotary_cos_sin(head_dim: int, max_positions: int, theta: float, device) -> 
 
 
 def _apply_rotary(x: torch.Tensor, rot: torch.Tensor) -> torch.Tensor:
-    """rot = interleaved cos/sin [cos_i, sin_i, ...] from _rotary_cos_sin.
-
-    The classic Llama-RoPE pairs the head's first half with its second half
-    along the head dimension; cos/sin from rot are built into pairs below.
-    """
+    """rot = interleaved cos/sin [..., L, head_dim] from _rotary_cos_sin."""
     half = x.shape[-1] // 2
     x1 = x[..., :half]
     x2 = x[..., half:]
-    cos = rot[0::2]
-    sin = rot[1::2]
+    cos = rot[..., 0::2]
+    sin = rot[..., 1::2]
     y1 = x1 * cos - x2 * sin
     y2 = x1 * sin + x2 * cos
     return torch.stack([y1, y2], dim=-1).reshape_as(x)
@@ -121,9 +117,9 @@ class RealModelComputeEngine:
         self._build_layer_info()
         self._build_all_layer_info()
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.num_q_heads = 32  # TinyLlama q heads
-        self.num_kv_heads = 4  # k/v grouped heads
-        self.head_dim = self.hidden_size // self.num_q_heads
+        self._infer_attention_config()
+        self._rot_cache = _rotary_cos_sin(self.head_dim, min(max_positions, 2048), 10000.0, self.device).to(self.device)
+        self.seq_len = 1
         self.hidden = None
         self.embed_weight = None
         self.norm_weight = None
@@ -132,7 +128,23 @@ class RealModelComputeEngine:
         self.infer_trace: list[dict[str, object]] = []
         self.infer_total_s: float | None = None
         self._infer_t0: float | None = None
-        self._init_hidden()
+        self._init_hidden(seq_len=1)
+
+    def _infer_attention_config(self) -> None:
+        """Infer Q/KV head counts and head_dim from safetensors projection shapes."""
+        q_out = self.hidden_size
+        k_out = None
+        for tname, meta in self.tensor_meta.items():
+            if tname.endswith("self_attn.q_proj.weight") and len(meta["shape"]) == 2:
+                q_out = int(meta["shape"][0])
+            elif tname.endswith("self_attn.k_proj.weight") and len(meta["shape"]) == 2:
+                k_out = int(meta["shape"][0])
+            if k_out is not None and q_out:
+                break
+        head_dim = 64 if (q_out % 64 == 0 and (k_out is None or k_out % 64 == 0)) else 32
+        self.head_dim = head_dim
+        self.num_q_heads = max(1, q_out // head_dim)
+        self.num_kv_heads = max(1, (k_out // head_dim) if k_out else self.num_q_heads)
 
     # -- backend ------------------------------------------------------------
     @staticmethod
@@ -192,14 +204,20 @@ class RealModelComputeEngine:
                 return t
         raise KeyError(f"missing tensor suffix {suffix}; got {list(params)}")
 
-    def _init_hidden(self) -> None:
-        self.hidden = torch.empty(1, 1, self.hidden_size, device=self.device).uniform_(-0.05, 0.05)
+    def _init_hidden(self, seq_len: int = 1) -> None:
+        self.seq_len = max(1, int(seq_len))
+        g = torch.Generator(device="cpu").manual_seed(42)
+        self.hidden = torch.empty(1, self.seq_len, self.hidden_size).uniform_(-0.05, 0.05, generator=g).to(self.device)
 
     def embed_token(self, token_id: int) -> torch.Tensor:
+        return self.embed_tokens([int(token_id)])
+
+    def embed_tokens(self, token_ids: list[int]) -> torch.Tensor:
         if self.embed_weight is None:
             raise RuntimeError("embed_tokens.weight not loaded; run embed layer first")
-        idx = torch.tensor([int(token_id)], device=self.embed_weight.device, dtype=torch.long)
-        self.hidden = self.embed_weight.index_select(0, idx).unsqueeze(1)  # [1,1,hidden]
+        idx = torch.tensor([int(t) for t in token_ids], device=self.embed_weight.device, dtype=torch.long)
+        self.seq_len = len(token_ids)
+        self.hidden = self.embed_weight.index_select(0, idx).unsqueeze(0)  # [1, L, hidden]
         return self.hidden
 
     # -- transformer block ---------------------------------------------------
@@ -210,19 +228,27 @@ class RealModelComputeEngine:
         v = F.linear(ln1, self._get_tensor(params, "self_attn.v_proj.weight"))
 
         B, L, _ = q.shape
-        qh = q.view(B, L, self.num_q_heads, self.head_dim).transpose(1, 2)     # [B,L,32,64]
-        kh = k.view(B, L, self.num_kv_heads, self.head_dim).transpose(1, 2)  # [B,L,4,64]
-        vh = v.view(B, L, self.num_kv_heads, self.head_dim).transpose(1, 2)  # [B,L,4,64]
+        qh = q.view(B, L, self.num_q_heads, self.head_dim).transpose(1, 2)     # [B, Hq, L, D]
+        kh = k.view(B, L, self.num_kv_heads, self.head_dim).transpose(1, 2)    # [B, Hkv, L, D]
+        vh = v.view(B, L, self.num_kv_heads, self.head_dim).transpose(1, 2)    # [B, Hkv, L, D]
+
+        # Apply RoPE rotary positional embeddings across sequence positions 0..L-1
+        rot = self._rot_cache[:L]  # [L, head_dim]
+        qh = _apply_rotary(qh, rot.unsqueeze(0).unsqueeze(0))
+        kh = _apply_rotary(kh, rot.unsqueeze(0).unsqueeze(0))
 
         scale = 1.0 / math.sqrt(self.head_dim)
-        # NOTE: rotary embeddings are elided for compute-time measurement.  They
-        # are a pure O(head_dim) position-indexing rotation whose cost is several
-        # orders of magnitude smaller than the GEMM terms below, and (with a
-        # single-token sequence) adds only a single position's table lookup.
-        q = qh
-        k = kh.repeat_interleave(self.num_q_heads // self.num_kv_heads, dim=1)  # [B,32,L,64]
-        v = vh.repeat_interleave(self.num_q_heads // self.num_kv_heads, dim=1)  # [B,32,L,64]
-        attn = F.softmax((q @ k.transpose(-2, -1)) * scale, dim=-1) @ v  # [B,32,L,64]
+        repeat = max(1, self.num_q_heads // self.num_kv_heads)
+        k_exp = kh.repeat_interleave(repeat, dim=1) if repeat > 1 else kh
+        v_exp = vh.repeat_interleave(repeat, dim=1) if repeat > 1 else vh
+        scores = (qh @ k_exp.transpose(-2, -1)) * scale
+        if L > 1:
+            causal_mask = torch.triu(
+                torch.full((L, L), float("-inf"), device=scores.device, dtype=scores.dtype),
+                diagonal=1,
+            )
+            scores = scores + causal_mask
+        attn = F.softmax(scores, dim=-1) @ v_exp  # [B, Hq, L, D]
         attn = attn.transpose(1, 2).contiguous().view(B, L, self.hidden_size)
         attn_out = F.linear(attn, self._get_tensor(params, "self_attn.o_proj.weight"))
         x = x + attn_out

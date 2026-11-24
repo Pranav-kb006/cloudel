@@ -1,0 +1,63 @@
+# Cloud-Native Serverless LLM Streaming Testbed
+# Deploys S3-compatible MinIO object storage + Serverless Streaming Worker
+# Run: docker compose up --build
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: cloudel-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API (HTTP Range GET endpoint)
+      - "9001:9001"   # MinIO Web Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: cloudel-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./models:/models:ro
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/llm-checkpoints;
+      mc anonymous set download local/llm-checkpoints;
+      if [ -f /models/llama_12layer_140m.safetensors ]; then
+        mc cp /models/llama_12layer_140m.safetensors local/llm-checkpoints/llama_12layer_140m.safetensors;
+      fi;
+      echo 'MinIO bucket llm-checkpoints initialized.';
+      "
+
+  streaming-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloudel-worker
+    depends_on:
+      - minio
+    environment:
+      STORAGE_BACKEND: rangeserver
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_BUCKET: llm-checkpoints
+      BANDWIDTH_MBPS: "250"
+      LOOKAHEAD: "2"
+    ports:
+      - "8000:8000"   # Live Interactive Demo Dashboard
+      - "8001:8001"   # Throttled HTTP RangeServer
+    mem_limit: 2g
+    cpus: "2.0"
+
+volumes:
+  minio_data:

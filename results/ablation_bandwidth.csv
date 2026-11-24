@@ -1,0 +1,5 @@
+bandwidth_mbps,mono_ttft_s,prog_ttft_s,ttft_reduction_pct,speedup_x,mono_first_layer_s,prog_first_layer_s,first_layer_speedup_x,prog_masking_ratio,mono_compute_s,prog_compute_s,mono_download_s,prog_io_wait_s,mono_peak_rss_mb,prog_peak_rss_mb,mono_delta_rss_mb,prog_delta_rss_mb,rss_delta_reduction_pct
+100.0,27.5968,23.8866,13.44,1.155,26.9669,2.0898,12.9,0.0407,0.7594,1.15,26.8365,22.7209,623.07,470.85,400.36,161.29,59.71
+250.0,12.1415,9.8916,18.53,1.227,11.4647,0.9562,11.99,0.1877,0.7801,1.9109,11.3603,7.9423,685.61,498.8,341.85,130.29,61.89
+500.0,8.2475,5.4891,33.45,1.503,7.1451,0.5182,13.79,0.2304,1.1877,1.352,7.0591,4.0819,641.01,512.05,341.11,207.64,39.13
+1000.0,3.8277,3.3691,11.98,1.136,3.1969,0.3349,9.55,0.546,0.7377,1.9293,3.0878,1.3965,655.58,499.04,368.47,160.56,56.43

@@ -1,72 +1,58 @@
-# Async Progressive Layer-Streaming Engine
+# Progressive AI — Asynchronous Layer-Streaming Engine for Serverless LLMs
 
-**IS355TBD (Cloud Computing), 5th Sem, RVCE — Experiential Learning project**
+An asynchronous progressive layer-streaming engine that accelerates serverless Large Language Model (LLM) cold starts by disaggregating SafeTensors checkpoints into per-layer HTTP byte ranges, overlapping network prefetching with PyTorch Transformer execution, and evicting completed layers to bound container working-set memory.
 
-Design and empirical evaluation of an asynchronous progressive layer-streaming engine for
-accelerating serverless LLM invocations. The engine treats a safetensors checkpoint as
-per-layer byte ranges, fetches layer `i+1` over HTTP Range while computing layer `i`, and
-bounds the transient working set with a ring buffer and RSS clamp.
+## Architecture
 
-## Quick start
+- **Header-Only Remote Manifest (`src/storage/s3_adapter.py`)**: Resolves per-layer byte offsets using two small RFC 7233 HTTP `Range` requests (`bytes=0-7` and `bytes=8-(8+H-1)`) without downloading the full checkpoint.
+- **Asynchronous Producer-Consumer Pipeline (`src/bench/ablation_suite.py`, `src/core/`)**: Semaphore-bounded (`K`) HTTP Range prefetcher streaming layer `i+1` concurrently while executing layer `i`, with immediate post-layer payload eviction.
+- **PyTorch Transformer Compute Engine (`src/core/RealModelComputeEngine.py`)**: Zero-copy `torch.frombuffer` BF16/FP16/FP32 weight binding executing RMSNorm, RoPE, Causal Grouped-Query Attention (GQA), and SwiGLU MLP.
+- **Cloud-Native Deployment (`Dockerfile`, `docker-compose.yml`)**: Containerized worker with cgroup memory/CPU limits paired with S3-compatible MinIO object storage and a shared token-bucket HTTP `RangeServer`.
+- **Observability Dashboard (`web/`)**: Light-first cloud infrastructure dashboard with live side-by-side Monolithic vs. Progressive execution, Model Registry, Experiment History (CSV export), Latency/Memory/Network Analytics, Execution Pipeline view, and System Logs.
 
-```bash
-python3 -m pip install aiohttp psutil requests   # one package install command
-bash setup.sh                                    # idempotent; generates synthetic models
-bash run.sh                                      # 3 baseline + 3 pipeline runs -> results/
-```
-
-Minimal proof of the streaming pipeline (stdlib only):
+## Quick Start
 
 ```bash
-python3 examples/minimal_stream.py
+pip install -r requirements.txt
+pip install torch numpy matplotlib
+
+# 1. Generate the 12-layer Llama BF16 safetensors checkpoint (290 MiB, 152M params)
+python src/bench/make_transformer_model.py
+
+# 2. Launch the observability & live experiment dashboard (http://127.0.0.1:8000)
+python web/demo_server.py
 ```
 
-## Measured result (2026-11-11)
+### Run Empirical Benchmarks & Generate Charts
 
-Synthetic 8-layer F32 checkpoint (8.00 MiB), local RangeServer over HTTP loopback,
-8 Mbit/s shared throttle, 3 runs per mode:
-
-| Metric (mean) | Monolithic | Pipelined | Change |
-|---|---:|---:|---:|
-| TTFT, full forward (s) | 15.702 | 10.816 | **−31.1% (1.45×)** |
-| First-layer fill (s) | 9.582 | 3.959 | diagnostic only, not TTFT |
-| I/O masking ratio | 0.000 | 0.626 | — |
-| Peak RSS (MB) | 53.67 | 48.28 | reported, **not claimed as a memory win** |
-
-Source: `results/benchmark.csv`. No number is fabricated. TTFT means completion of the
-full forward pass; a real first token requires every layer.
-
-## Documentation
-
-| File | Contents |
-|---|---|
-| `docs/PROJECT_SUBMISSION.md` | Consolidated submission-ready document |
-| `docs/project_report.md` | Full EL report (11 sections, literature, results) |
-| `docs/01_architecture.md` | Architecture and safetensors random-access design |
-| `docs/02_math_model.md` | TTFT, masking, speedup, memory and chunking model |
-| `docs/viva_qa.md` | Viva Q&A with measured answers |
-| `docs/build_todo.md` | Build status and verification evidence |
-
-## Honest limitations
-
-- Compute is a deterministic synthetic FP32 kernel, **not a transformer**.
-- Local RangeServer + loopback is a stand-in for **MinIO/S3 + `tc`**; it is not a real
-  serverless deployment and does not measure cold-start provisioning.
-- **No peak-RSS saving is claimed**: the naive implementation pre-allocates the full
-  parameter set; the measured RSS gap reflects whole-file retention vs a bounded buffer.
-- Masking is **62.6%**, below 70%, and specific to this synthetic workload and link.
-- `torch`, `numpy`, and `safetensors` are not required and are not installed.
-
-## Layout
-
+```bash
+python src/bench/ablation_suite.py
+python src/bench/plot_charts.py
 ```
-src/core/       safetensors parser, manifest writer, prefetcher, buffer, pipeline driver
-src/storage/    stdlib HTTP Range server with bandwidth throttle
-src/bench/      benchmark harness + synthetic model generator
-examples/       minimal end-to-end streaming demo
-docs/           architecture, math, report, viva, consolidated submission
-results/        benchmark.csv, per_layer.csv, RSS traces
-run.sh          start server, run benchmark, clean up
-setup.sh        idempotent deps + synthetic models
-scripts/        verify_build.sh merge-review verifier
+
+### Run with Docker & MinIO S3
+
+```bash
+docker compose up --build
+```
+
+## Measured Benchmarks (12-Layer Llama BF16, 290 MiB, `seq_len=128`, `K=2`)
+
+| Link Bandwidth | Monolithic TTFT | Progressive TTFT | TTFT Gain | 1st-Layer Speedup | I/O Masking | Working-Set ΔRSS Saved |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100 Mbps | 27.60 s | 23.89 s | −13.4% (1.16×) | 12.9× | 4.1% | −59.7% (400.4 → 161.3 MB) |
+| 250 Mbps | 12.14 s | 9.89 s | −18.5% (1.23×) | 12.0× | 18.8% | −61.9% (341.9 → 130.3 MB) |
+| 500 Mbps | 8.25 s | 5.49 s | **−33.5% (1.50×)** | **13.8×** | 23.0% | −39.1% (341.1 → 207.6 MB) |
+| 1000 Mbps | 3.83 s | 3.37 s | −12.0% (1.14×) | 9.6× | **54.6%** | −56.4% (368.5 → 160.6 MB) |
+
+## Repository Structure
+
+```text
+src/core/       PyTorch Llama compute engine, safetensors manifest, prefetcher, ring buffer
+src/storage/    RFC 7233 throttled RangeServer, header-only S3/MinIO adapter
+src/bench/      Transformer checkpoint generator, ablation suite, chart plotting
+web/            Observability dashboard backend (demo_server.py) and light-first frontend
+results/        Measured CSV/JSON benchmark outputs and 300-DPI charts
+Dockerfile      Containerized serverless worker image
+docker-compose.yml  MinIO S3 + streaming worker stack
 ```

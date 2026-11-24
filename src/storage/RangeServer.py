@@ -66,7 +66,9 @@ class BandwidthLimiter:
                 self._next_free = now
             self._next_free += nbytes / self.bytes_per_sec
             delay = self._next_free - now
-        if delay > 0:
+        # Avoid sub-15ms sleep quantization on Windows by letting small credits
+        # accumulate until delay >= 0.018s.
+        if delay >= 0.018:
             time.sleep(delay)
 
 
@@ -303,10 +305,10 @@ class RangeServer:
             (name, int(meta["start"]), int(meta["end"]))
             for name, meta in self.info["layers"].items()
         ]
-        # Chunk sizing: ~100 writes/s at the configured rate, bounded so that
-        # high rates still use large writes and low rates stay smooth.
+        # Chunk sizing: ~25 writes/s at the configured rate, up to 2 MiB so
+        # high-bandwidth links (100-1000 Mbps) avoid OS sleep-timer overhead.
         if self.bytes_per_sec > 0:
-            self.chunk_size = int(max(1024, min(65536, self.bytes_per_sec / 100.0)))
+            self.chunk_size = int(max(4096, min(2 * 1024 * 1024, self.bytes_per_sec / 25.0)))
         else:
             self.chunk_size = 65536
 
